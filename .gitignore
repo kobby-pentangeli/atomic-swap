@@ -1,0 +1,21 @@
+# Rust
+/target/
+Cargo.lock
+
+# Node.js
+node_modules/
+
+# Hardhat
+cache/
+artifacts/
+typechain-types/
+
+# Environment
+.env
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
