@@ -383,11 +383,9 @@ impl EthClient {
 
         match event_sig.as_bytes() {
             sig if sig == commit_created_sig => {
-                // Parse CommitmentCreated event
                 let token_id = U256::from_big_endian(log.topics[1].as_bytes());
                 let secret_hash: [u8; 32] = log.topics[2].into();
 
-                // Decode the data field for non-indexed parameters
                 let _decoded = ethers::abi::decode(
                     &[
                         ethers::abi::ParamType::Address,   // seller

@@ -1,3 +1,4 @@
+use bitcoin::{Address as BtcAddress, Network};
 use ethers::core::types::{Address as EthAddress, H256, U64, U256};
 use serde::{Deserialize, Serialize};
 
@@ -19,7 +20,7 @@ pub struct SwapState {
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub enum SwapStatus {
     Created,
     /// Step 1: Bitcoin locked by buyer
@@ -32,41 +33,6 @@ pub enum SwapStatus {
     BtcClaimed,
     Expired,
     Failed(String),
-}
-
-impl SwapState {
-    pub fn new(secret_hash: [u8; 32]) -> Self {
-        let now = chrono::Utc::now();
-        Self {
-            swap_id: uuid::Uuid::new_v4().to_string(),
-            secret_hash,
-            btc_locked: false,
-            btc_txid: None,
-            eth_committed: false,
-            eth_commit_tx: None,
-            nft_minted: false,
-            nft_mint_tx: None,
-            btc_claimed: false,
-            btc_claim_tx: None,
-            revealed_secret: None,
-            status: SwapStatus::Created,
-            created_at: now,
-            updated_at: now,
-        }
-    }
-
-    pub fn update_status(&mut self, new_status: SwapStatus) {
-        self.status = new_status;
-        self.updated_at = chrono::Utc::now();
-    }
-
-    pub fn complete(&self) -> bool {
-        matches!(self.status, SwapStatus::BtcClaimed)
-    }
-
-    pub fn failed(&self) -> bool {
-        matches!(self.status, SwapStatus::Failed(_) | SwapStatus::Expired)
-    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -160,4 +126,57 @@ pub struct CommitmentInfo {
     pub commit_time: U256,
     pub is_active: bool,
     pub token_uri: String,
+}
+
+pub struct AtomicSwapConfig {
+    pub btc_rpc: String,
+    pub btc_user: String,
+    pub btc_pass: String,
+    pub btc_network: Network,
+    pub buyer_btc_key: String,
+    pub seller_btc_pubkey: String,
+    pub eth_rpc: String,
+    pub buyer_eth_key: String,
+    pub nft_contract: EthAddress,
+    pub btc_amount: u64,
+    pub nft_price: u64,
+    pub token_id: u64,
+    pub metadata_uri: String,
+    pub timeout: u16,
+}
+
+pub struct CommitForMintConfig {
+    pub eth_rpc: String,
+    pub seller_eth_key: String,
+    pub nft_contract: EthAddress,
+    pub secret_hash: [u8; 32],
+    pub token_id: u64,
+    pub nft_price: u64,
+    pub buyer_address: Option<EthAddress>,
+    pub metadata_uri: String,
+}
+
+pub struct ClaimBtcConfig {
+    pub btc_rpc: String,
+    pub btc_user: String,
+    pub btc_pass: String,
+    pub btc_network: Network,
+    pub seller_btc_key: String,
+    pub buyer_btc_pubkey: String,
+    pub secret: [u8; 32],
+    pub secret_hash: [u8; 32],
+    pub lock_txid: bitcoin::Txid,
+    pub lock_vout: u32,
+    pub timeout: u16,
+    pub destination: Option<BtcAddress>,
+}
+
+pub struct MonitorConfig {
+    pub btc_rpc: String,
+    pub btc_user: String,
+    pub btc_pass: String,
+    pub btc_network: Network,
+    pub eth_rpc: String,
+    pub eth_key: String,
+    pub nft_contract: EthAddress,
 }
