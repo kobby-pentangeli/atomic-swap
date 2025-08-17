@@ -1,6 +1,7 @@
 {
-  "name": "crosschain-secret-mint-eth",
+  "name": "eth-htlc",
   "version": "1.0.0",
+  "description": "Hash Time Locked Contract (HTLC) for Ethereum",
   "type": "module",
   "scripts": {
     "deploy:local": "hardhat ignition deploy ignition/modules/NFTSecretMint.ts --network localhost",
