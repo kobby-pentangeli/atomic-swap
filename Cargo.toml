@@ -1,5 +1,5 @@
 [workspace]
-members = ["btc"]
+members = ["agent/btc", "client"]
 
 resolver = "3"
 
@@ -7,3 +7,13 @@ resolver = "3"
 bitcoin = { version = "0.32", features = ["serde", "rand"] }
 serde = { version = "1.0", features = ["derive"] }
 thiserror = "2.0.15"
+
+[profile.release]
+overflow-checks = true
+lto = "fat"
+codegen-units = 1
+
+[profile.release.build-override]
+opt-level = 3
+incremental = false
+codegen-units = 1
