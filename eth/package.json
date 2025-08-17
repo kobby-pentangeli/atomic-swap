@@ -1,0 +1,22 @@
+{
+  "name": "crosschain-secret-mint-eth",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "deploy:local": "hardhat ignition deploy ignition/modules/NFTSecretMint.ts --network localhost",
+    "deploy:sepolia": "hardhat ignition deploy ignition/modules/NFTSecretMint.ts --network sepolia", 
+    "deploy:mainnet": "hardhat ignition deploy ignition/modules/NFTSecretMint.ts --network mainnet"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-ignition": "^3.0.0",
+    "@nomicfoundation/hardhat-toolbox-viem": "^5.0.0",
+    "@types/node": "^22.17.2",
+    "forge-std": "github:foundry-rs/forge-std#v1.9.4",
+    "hardhat": "^3.0.0",
+    "typescript": "~5.8.0",
+    "viem": "^2.33.3"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "^5.4.0"
+  }
+}
