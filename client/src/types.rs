@@ -113,7 +113,27 @@ pub struct BitcoinTx {
     pub txid: bitcoin::Txid,
     pub confirmations: u32,
     pub block_hash: Option<bitcoin::BlockHash>,
-    pub block_time: Option<u32>,
+    pub block_time: Option<usize>,
+}
+
+impl BitcoinTx {
+    pub fn block_height(&self) -> Option<u64> {
+        if self.confirmations > 0 {
+            // TODO (kobby-pentangeli): This would need the current height to be accurate
+            // For now, we return a placeholder that indicates confirmation
+            Some(800_000) // Placeholder mainnet height
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct UtxoInfo {
+    /// ID of the output.
+    pub outpoint: bitcoin::OutPoint,
+    /// Contents of the output.
+    pub tx_out: bitcoin::TxOut,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
