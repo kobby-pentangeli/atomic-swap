@@ -1,4 +1,4 @@
-use ethers::core::types::{Address as EthAddress, H256, U256};
+use ethers::core::types::{Address as EthAddress, H256, U64, U256};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -106,6 +106,11 @@ pub enum SwapEvent {
         txid: String,
         amount: u64,
     },
+    CommitCancelled {
+        token_id: u64,
+        secret: [u8; 32],
+        seller: EthAddress,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -139,9 +144,9 @@ pub struct UtxoInfo {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct EthereumTx {
     pub hash: H256,
-    pub block_number: Option<U256>,
+    pub block_number: Option<U64>,
     pub block_hash: Option<H256>,
-    pub tx_index: Option<U256>,
+    pub tx_index: Option<U64>,
     pub confirmations: Option<u64>,
     pub gas_used: Option<U256>,
 }
