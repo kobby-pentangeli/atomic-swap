@@ -14,7 +14,6 @@ BITCOIN_DATA_DIR="$SETUP_DIR/.bitcoin"
 BITCOIN_CONF="$BITCOIN_DATA_DIR/bitcoin.conf"
 LOG_FILE="$SETUP_DIR/setup.log"
 
-# Helper functions
 log() {
     echo -e "${BLUE}[INFO]${NC} $1"
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] INFO: $1" >> "$LOG_FILE"
@@ -62,22 +61,18 @@ stop_bitcoin_processes() {
     
     # Stop Bitcoin Core using bitcoin-cli if it's running
     if command -v bitcoin-cli &> /dev/null; then
-        # Try different possible configurations
         bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" stop 2>/dev/null && log "Stopped Bitcoin via bitcoin-cli (project datadir)" || true
         bitcoin-cli -regtest stop 2>/dev/null && log "Stopped Bitcoin via bitcoin-cli (default)" || true
     fi
     
-    # Wait a moment for graceful shutdown
     sleep 3
     
-    # Force kill any remaining bitcoind processes
     if pgrep -f "bitcoind" > /dev/null; then
         warn "Force killing remaining bitcoind processes..."
         pkill -f "bitcoind" 2>/dev/null || true
         sleep 2
     fi
     
-    # Check if any Bitcoin processes are still running
     if pgrep -f "bitcoind" > /dev/null; then
         error "Could not stop existing bitcoind processes. Please stop them manually and try again."
     fi
@@ -130,19 +125,15 @@ wait_for_ethereum() {
     return 1
 }
 
-# Main setup function
 main() {
     log "Starting Cross-Chain Secret Mint setup..."
     log "Setup log: $LOG_FILE"
     log "Bitcoin data directory: $BITCOIN_DATA_DIR"
     
-    # Clear previous log
     > "$LOG_FILE"
     
-    # Stop any existing Bitcoin processes first
     stop_bitcoin_processes
-    
-    # Check prerequisites
+
     log "Checking prerequisites..."
     
     if ! check_command "cargo"; then
@@ -160,8 +151,7 @@ main() {
     if ! check_command "jq"; then
         install_jq
     fi
-    
-    # Check for Bitcoin Core
+
     if ! check_command "bitcoind" || ! check_command "bitcoin-cli"; then
         warn "Bitcoin Core not found. Attempting to install..."
         
@@ -177,8 +167,7 @@ main() {
     fi
     
     success "All prerequisites found!"
-    
-    # Build Rust client
+
     log "Building Rust client..."
     if [ -d "$SETUP_DIR/client" ]; then
         cd "$SETUP_DIR/client"
@@ -189,16 +178,9 @@ main() {
         warn "Client directory not found, skipping Rust build"
     fi
     
-    # Setup Bitcoin
     setup_bitcoin
-    
-    # Setup Ethereum
     setup_ethereum
-    
-    # Generate test keys and accounts
     generate_test_accounts
-    
-    # Final verification
     verify_setup
     
     success "Setup completed successfully!"
@@ -242,22 +224,20 @@ EOF
     
     wait_for_service "bitcoind"
     
-    # Create wallet if it doesn't exist
     log "Setting up Bitcoin wallet..."
     local existing_wallets
     if existing_wallets=$(bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" listwallets 2>/dev/null); then
         if ! echo "$existing_wallets" | grep -q "testwallet"; then
             log "Creating new wallet 'testwallet'..."
-            bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" createwallet "testwallet" false false "" false true true
+            bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" createwallet "testwallet"
         else
             log "Wallet 'testwallet' already exists"
         fi
     else
         warn "Could not list wallets, attempting to create..."
-        bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" createwallet "testwallet" false false "" false true true 2>/dev/null || true
+        bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" createwallet "testwallet" 2>/dev/null || true
     fi
     
-    # Generate initial blocks
     log "Generating initial blocks and funding addresses..."
     local address
     if address=$(bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" getnewaddress "initial" 2>/dev/null); then
@@ -280,18 +260,14 @@ setup_ethereum() {
     
     cd "$SETUP_DIR/agent/eth"
     
-    # Install dependencies
     log "Installing npm dependencies..."
     npm install --silent
     
-    # Compile contracts
     log "Compiling smart contracts..."
     npx hardhat compile
-    
-    # Start Hardhat network in background
+
     log "Starting Hardhat network..."
     
-    # Kill any existing Hardhat processes
     if [ -f hardhat.pid ]; then
         local old_pid=$(cat hardhat.pid)
         if ps -p "$old_pid" > /dev/null 2>&1; then
@@ -302,23 +278,18 @@ setup_ethereum() {
         rm -f hardhat.pid
     fi
     
-    # Also kill by process name as backup
     pkill -f "hardhat node" 2>/dev/null || true
     sleep 2
     
-    # Start Hardhat node in background
     npx hardhat node > hardhat.log 2>&1 &
     local hardhat_pid=$!
     echo "$hardhat_pid" > hardhat.pid
-    
-    # Wait for Hardhat to start
+
     wait_for_ethereum
     
-    # Deploy contract with Ignition
     log "Deploying NFT contract with Ignition..."
     npx hardhat ignition deploy ignition/modules/NFTSecretMint.ts --network localhost
-    
-    # Get contract address from deployment artifacts
+
     local deployment_file="ignition/deployments/chain-31337/deployed_addresses.json"
     if [ ! -f "$deployment_file" ]; then
         error "Deployment artifacts not found! Check hardhat.log for details"
@@ -333,7 +304,6 @@ setup_ethereum() {
         error "Failed to parse deployment file $deployment_file"
     fi
     
-    # Save contract address
     echo "$contract_address" > contract_address.txt
     log "Contract deployed at: $contract_address"
     
@@ -345,19 +315,78 @@ generate_test_accounts() {
     log "Generating test accounts and keys..."
     log "Generating Bitcoin test accounts..."
 
-    # Buyer Bitcoin account
+    # Build the xpriv derivation binary if needed
+    if [ ! -f "$SETUP_DIR/target/release/derive_privkey" ]; then
+        log "Building key derivation helper..."
+        cargo build --release --bin derive_privkey
+    fi
+
     local buyer_btc_address seller_btc_address
     local buyer_btc_privkey seller_btc_privkey
     local buyer_btc_pubkey seller_btc_pubkey
 
     if buyer_btc_address=$(bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" getnewaddress "buyer" 2>/dev/null); then
-        # For descriptor wallets, use getaddressinfo and listdescriptors
-        local addr_info
         if addr_info=$(bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" getaddressinfo "$buyer_btc_address" 2>/dev/null); then
             buyer_btc_pubkey=$(echo "$addr_info" | jq -r .pubkey)
-            # Get private key from wallet dump for descriptor wallets
-            buyer_btc_privkey=$(bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" -rpcwallet=testwallet dumpprivkey "$buyer_btc_address" 2>/dev/null || \
-                            bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" listdescriptors true | jq -r --arg addr "$buyer_btc_address" '.descriptors[] | select(.desc | contains($addr)) | .desc' | grep -o '\[.*\]' | tr -d '[]')
+            
+            # Get derivation path
+            local hdkeypath=$(echo "$addr_info" | jq -r .hdkeypath)
+            echo "[DEBUG] HD key path: $hdkeypath"
+            
+            # Get the wallet's master private key directly
+            local wallet_info=$(bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" getwalletinfo)
+            local wallet_name=$(echo "$wallet_info" | jq -r .walletname)
+            
+            # Get descriptors with private keys
+            local descriptors=$(bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" listdescriptors true)
+            echo "[DEBUG] Raw descriptors output:"
+            echo "$descriptors"
+            
+            local path_prefix=""
+            if [[ "$hdkeypath" =~ m/84h/1h/0h/0/ ]]; then
+                path_prefix="84h/1h/0h/0"
+            elif [[ "$hdkeypath" =~ m/49h/1h/0h/0/ ]]; then
+                path_prefix="49h/1h/0h/0"
+            elif [[ "$hdkeypath" =~ m/44h/1h/0h/0/ ]]; then
+                path_prefix="44h/1h/0h/0"
+            elif [[ "$hdkeypath" =~ m/86h/1h/0h/0/ ]]; then
+                path_prefix="86h/1h/0h/0"
+            fi
+            
+            echo "[DEBUG] Looking for descriptor with path prefix: $path_prefix"
+
+            local desc=$(echo "$descriptors" | jq -r --arg prefix "$path_prefix" '.descriptors[] | select(.desc | contains($prefix)) | select(.desc | test("/0/\\*")) | .desc' | head -1)
+            echo "[DEBUG] Selected descriptor: $desc"
+            
+            if [[ -n "$desc" ]]; then
+                local base_xpriv=""
+                
+                base_xpriv=$(echo "$desc" | sed -n 's/.*(\[.*\]\([a-zA-Z0-9]*\)\/.*/\1/p')
+                
+                if [[ -z "$base_xpriv" ]]; then
+                    base_xpriv=$(echo "$desc" | grep -oE 'tprv[a-zA-Z0-9]+')
+                fi
+                
+                if [[ -z "$base_xprv" ]]; then
+                    base_xprv=$(echo "$desc" | sed -n 's/.*]\([^/]*\)\/.*/\1/p')
+                fi
+                
+                echo "[DEBUG] Extracted base xpriv: '$base_xpriv'"
+                
+                if [[ -n "$base_xpriv" && -n "$hdkeypath" ]]; then
+                    echo "[DEBUG] Calling: $SETUP_DIR/target/release/derive_privkey '$base_xpriv' '$hdkeypath'"
+                    if buyer_btc_privkey=$("$SETUP_DIR/target/release/derive_privkey" "$base_xpriv" "$hdkeypath" 2>&1); then
+                        echo "[DEBUG] Buyer private key derived successfully"
+                    else
+                        echo "[DEBUG] Derivation failed: $buyer_btc_privkey"
+                        error "Failed to derive buyer private key"
+                    fi
+                else
+                    error "Failed to extract xpriv ($base_xpriv) or hdkeypath ($hdkeypath) for buyer"
+                fi
+            else
+                error "Failed to find appropriate descriptor for buyer"
+            fi
         else
             error "Failed to get buyer address info"
         fi
@@ -365,13 +394,58 @@ generate_test_accounts() {
         error "Failed to generate buyer Bitcoin address"
     fi
 
-    # Seller Bitcoin account  
     if seller_btc_address=$(bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" getnewaddress "seller" 2>/dev/null); then
-        local addr_info
         if addr_info=$(bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" getaddressinfo "$seller_btc_address" 2>/dev/null); then
             seller_btc_pubkey=$(echo "$addr_info" | jq -r .pubkey)
-            seller_btc_privkey=$(bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" -rpcwallet=testwallet dumpprivkey "$seller_btc_address" 2>/dev/null || \
-                                bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" listdescriptors true | jq -r --arg addr "$seller_btc_address" '.descriptors[] | select(.desc | contains($addr)) | .desc' | grep -o '\[.*\]' | tr -d '[]')
+            
+            local hdkeypath=$(echo "$addr_info" | jq -r .hdkeypath)
+            echo "[DEBUG] HD key path: $hdkeypath"
+            
+            local descriptors=$(bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" listdescriptors true)
+            
+            local path_prefix=""
+            if [[ "$hdkeypath" =~ m/84h/1h/0h/0/ ]]; then
+                path_prefix="84h/1h/0h/0"
+            elif [[ "$hdkeypath" =~ m/49h/1h/0h/0/ ]]; then
+                path_prefix="49h/1h/0h/0"
+            elif [[ "$hdkeypath" =~ m/44h/1h/0h/0/ ]]; then
+                path_prefix="44h/1h/0h/0"
+            elif [[ "$hdkeypath" =~ m/86h/1h/0h/0/ ]]; then
+                path_prefix="86h/1h/0h/0"
+            fi
+            
+            echo "[DEBUG] Looking for descriptor with path prefix: $path_prefix"
+            
+            local desc=$(echo "$descriptors" | jq -r --arg prefix "$path_prefix" '.descriptors[] | select(.desc | contains($prefix)) | select(.desc | test("/0/\\*")) | .desc' | head -1)
+            echo "[DEBUG] Selected descriptor: $desc"
+            
+            if [[ -n "$desc" ]]; then
+                local base_xpriv=""
+                base_xpriv=$(echo "$desc" | grep -oE 'tprv[a-zA-Z0-9]+')
+                
+                echo "[DEBUG] Method 1 result: '$base_xpriv'"
+                
+                if [[ -z "$base_xpriv" ]]; then
+                    base_xpriv=$(echo "$desc" | sed -n 's/.*(\([^)]*\)).*/\1/p' | grep -oE 'tprv[a-zA-Z0-9]+')
+                    echo "[DEBUG] Method 2 result: '$base_xpriv'"
+                fi
+                
+                echo "[DEBUG] Extracted base xprv: '$base_xpriv'"
+                
+                if [[ -n "$base_xpriv" && -n "$hdkeypath" ]]; then
+                    echo "[DEBUG] Calling: $SETUP_DIR/target/release/derive_privkey '$base_xpriv' '$hdkeypath'"
+                    if seller_btc_privkey=$("$SETUP_DIR/target/release/derive_privkey" "$base_xpriv" "$hdkeypath" 2>&1); then
+                        echo "[DEBUG] Seller private key derived successfully"
+                    else
+                        echo "[DEBUG] Derivation failed: $seller_btc_privkey"
+                        error "Failed to derive seller private key"
+                    fi
+                else
+                    error "Failed to extract xpriv ($base_xpriv) or hdkeypath ($hdkeypath) for seller"
+                fi
+            else
+                error "Failed to find appropriate descriptor for seller"
+            fi
         else
             error "Failed to get seller address info"
         fi
@@ -379,24 +453,20 @@ generate_test_accounts() {
         error "Failed to generate seller Bitcoin address"
     fi
     
-    # Fund buyer with Bitcoin
     log "Funding buyer Bitcoin address..."
     bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" generatetoaddress 5 "$buyer_btc_address" > /dev/null
-    bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" generatetoaddress 1 "$(bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" getnewaddress)" > /dev/null # Confirm the funding
+    bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" generatetoaddress 1 "$(bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" getnewaddress)" > /dev/null
     
-    # Ethereum accounts (using Hardhat's default funded accounts)
     local buyer_eth_privkey="0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
     local buyer_eth_address="0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
     local seller_eth_privkey="0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
     local seller_eth_address="0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
     
-    # Get contract address with error handling
     local contract_address="N/A"
     if [ -f "$SETUP_DIR/agent/eth/contract_address.txt" ]; then
         contract_address=$(cat "$SETUP_DIR/agent/eth/contract_address.txt")
     fi
     
-    # Create demo configuration file
     log "Creating demo configuration..."
     cat > "$SETUP_DIR/demo_config.sh" << EOF
 #!/bin/bash
@@ -569,7 +639,6 @@ verify_setup() {
         warn "Bitcoin verification failed"
     fi
     
-    # Check Ethereum
     if curl -s -X POST -H 'Content-Type: application/json' \
         --data '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' \
         http://localhost:8545 &>/dev/null; then
@@ -578,7 +647,6 @@ verify_setup() {
         warn "Ethereum node not responding"
     fi
     
-    # Check contract
     if [ -f "$SETUP_DIR/agent/eth/contract_address.txt" ]; then
         local contract_address=$(cat "$SETUP_DIR/agent/eth/contract_address.txt")
         log "NFT Contract: $contract_address deployed"
@@ -586,7 +654,6 @@ verify_setup() {
         warn "Contract address file not found"
     fi
     
-    # Check client build
     if [ -f "$SETUP_DIR/target/release/crosschain-secret-mint" ] || [ -f "$SETUP_DIR/target/release/client" ]; then
         log "Rust client: Built successfully"
     else
@@ -638,11 +705,8 @@ print_usage_instructions() {
 
 cleanup() {
     log "Cleaning up on exit..."
-    # The services will keep running for the demo
 }
 
-# Set up cleanup on script exit
 trap cleanup EXIT
 
-# Run main function
 main "$@"
