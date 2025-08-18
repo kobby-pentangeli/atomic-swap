@@ -19,3 +19,6 @@ typechain-types/
 
 # OS
 .DS_Store
+
+# Bitcoin data dir
+.bitcoin
