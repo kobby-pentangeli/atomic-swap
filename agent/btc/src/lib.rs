@@ -70,7 +70,7 @@ impl Contract {
     /// Build the script that locks the funds.
     ///
     /// Script logic:
-    /// ```
+    /// ```txt
     /// OP_IF
     ///     OP_SHA256 <secret_hash> OP_EQUALVERIFY
     ///     <seller> OP_CHECKSIG

@@ -11,7 +11,8 @@ use btc_htlc::{Contract as BtcContract, HtlcParams, generate_secret};
 use clap::Parser;
 use ethers::types::U256;
 use tokio::sync::mpsc;
-use tracing::{error, info, warn};
+use tokio::time::{Instant, sleep, timeout};
+use tracing::{Instrument, debug, error, info, instrument, warn};
 
 pub mod btc;
 pub mod cmd;
@@ -22,6 +23,12 @@ use btc::BtcClient;
 use cmd::Commands;
 use eth::EthClient;
 use types::{AtomicSwapConfig, ClaimBtcConfig, CommitForMintConfig, MonitorConfig, SwapEvent};
+
+const MAX_BTC_CONFIRMATION_WAIT: Duration = Duration::from_secs(600); // 10 minutes
+const MAX_ETH_CONFIRMATION_WAIT: Duration = Duration::from_secs(600); // 10 minutes
+const MAX_COMMITMENT_WAIT: Duration = Duration::from_secs(1200); // 20 minutes
+const POLL_INTERVAL: Duration = Duration::from_secs(5);
+const CONFIRMATION_CHECK_INTERVAL: Duration = Duration::from_secs(10);
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -49,7 +56,7 @@ async fn main() -> Result<()> {
             metadata_uri,
             timeout,
         } => {
-            run_atomic_swap(AtomicSwapConfig {
+            let config = AtomicSwapConfig {
                 btc_rpc,
                 btc_user,
                 btc_pass,
@@ -58,14 +65,17 @@ async fn main() -> Result<()> {
                 seller_btc_pubkey,
                 eth_rpc,
                 buyer_eth_key,
-                nft_contract: nft_contract.parse()?,
+                nft_contract: nft_contract
+                    .parse()
+                    .context("Invalid NFT contract address")?,
                 btc_amount,
                 nft_price,
                 token_id,
                 metadata_uri,
                 timeout,
-            })
-            .await
+            };
+
+            execute_atomic_swap(config).await
         }
         Commands::CommitForMint {
             eth_rpc,
@@ -77,19 +87,23 @@ async fn main() -> Result<()> {
             buyer_address,
             metadata_uri,
         } => {
-            run_commit_for_mint(CommitForMintConfig {
+            let config = CommitForMintConfig {
                 eth_rpc,
                 seller_eth_key,
-                nft_contract: nft_contract.parse()?,
-                secret_hash: hex::decode(&secret_hash)?
-                    .try_into()
-                    .map_err(|_| anyhow::anyhow!("Invalid secret hash length"))?,
+                nft_contract: nft_contract
+                    .parse()
+                    .context("Invalid NFT contract address")?,
+                secret_hash: decode_hex_hash(&secret_hash, "secret hash")?,
                 token_id,
                 nft_price,
-                buyer_address: buyer_address.map(|s| s.parse()).transpose()?,
+                buyer_address: buyer_address
+                    .map(|s| s.parse())
+                    .transpose()
+                    .context("Invalid buyer address")?,
                 metadata_uri,
-            })
-            .await
+            };
+
+            execute_commit_for_mint(config).await
         }
         Commands::ClaimBtc {
             btc_rpc,
@@ -106,28 +120,24 @@ async fn main() -> Result<()> {
             destination,
         } => {
             let network = parse_network(&btc_network)?;
-
-            run_claim_bitcoin(ClaimBtcConfig {
+            let config = ClaimBtcConfig {
                 btc_rpc,
                 btc_user,
                 btc_pass,
                 btc_network: network,
                 seller_btc_key,
                 buyer_btc_pubkey,
-                secret: hex::decode(&secret)?
-                    .try_into()
-                    .map_err(|_| anyhow::anyhow!("Invalid secret length"))?,
-                secret_hash: hex::decode(&secret_hash)?
-                    .try_into()
-                    .map_err(|_| anyhow::anyhow!("Invalid secret hash length"))?,
-                lock_txid: lock_txid.parse()?,
+                secret: decode_hex_secret(&secret)?,
+                secret_hash: decode_hex_hash(&secret_hash, "secret hash")?,
+                lock_txid: lock_txid.parse().context("Invalid lock transaction ID")?,
                 lock_vout,
                 timeout,
                 destination: destination
                     .map(|s| parse_btc_address(&s, network))
                     .transpose()?,
-            })
-            .await
+            };
+
+            execute_claim_bitcoin(config).await
         }
         Commands::Monitor {
             btc_rpc,
@@ -138,32 +148,39 @@ async fn main() -> Result<()> {
             eth_key,
             nft_contract,
         } => {
-            run_monitor(MonitorConfig {
+            let config = MonitorConfig {
                 btc_rpc,
                 btc_user,
                 btc_pass,
                 btc_network: parse_network(&btc_network)?,
                 eth_rpc,
                 eth_key,
-                nft_contract: nft_contract.parse()?,
-            })
-            .await
+                nft_contract: nft_contract
+                    .parse()
+                    .context("Invalid NFT contract address")?,
+            };
+
+            execute_monitor(config).await
         }
     }
 }
 
-async fn run_atomic_swap(config: AtomicSwapConfig) -> Result<()> {
-    info!("Starting Cross-Chain Secret Mint Demo");
-    info!("==========================================");
+async fn execute_atomic_swap(config: AtomicSwapConfig) -> Result<()> {
+    info!(
+        btc_network = %config.btc_network,
+        nft_contract = %config.nft_contract,
+        "Initializing cross-chain atomic swap"
+    );
 
-    let buyer_keypair = config.buyer_btc_key.parse::<Keypair>()?;
-    let seller_pubkey: PublicKey = config.seller_btc_pubkey.parse()?;
+    let buyer_keypair = validate_btc_key(&config.buyer_btc_key, "buyer")?;
+    let seller_pubkey = validate_btc_pubkey(&config.seller_btc_pubkey, "seller")?;
     let buyer_pubkey = PublicKey::from(buyer_keypair.public_key());
 
     let (secret, secret_hash) = generate_secret();
-    info!("Generated secret pair");
-    info!("Secret: {}", hex::encode(secret));
-    info!("Hash: {}", hex::encode(secret_hash.as_byte_array()));
+    info!(
+        secret_hash = %hex::encode(secret_hash.as_byte_array()),
+        "Generated secret pair for atomic swap"
+    );
 
     let contract_params = HtlcParams {
         secret_hash,
@@ -175,216 +192,307 @@ async fn run_atomic_swap(config: AtomicSwapConfig) -> Result<()> {
     let btc_contract = BtcContract::new(contract_params);
     let htlc_address = btc_contract.address();
 
-    info!("HTLC Contract Created");
-    info!("Address: {}", htlc_address);
-    info!("Seller: {}", seller_pubkey);
-    info!("Buyer: {}", buyer_pubkey);
-    info!("Timeout: {} blocks", config.timeout);
-
-    let auth = Auth::UserPass(config.btc_user, config.btc_pass);
-    let btc_client = BtcClient::new(&config.btc_rpc, auth, config.btc_network, buyer_keypair)?;
-
-    info!("Connected to Bitcoin {}", config.btc_network);
-
-    let eth_client =
-        EthClient::new(&config.eth_rpc, &config.buyer_eth_key, config.nft_contract).await?;
-
-    info!("Connected to Ethereum");
-    info!("Contract: {:?}", config.nft_contract);
-    info!("Buyer: {:?}", eth_client.get_address());
-
-    info!("\nStep 1: Locking Bitcoin in HTLC");
-    info!("=====================================");
-
-    let btc_amount = Amount::from_sat(config.btc_amount);
-    let lock_txid = btc_client
-        .lock_funds(&btc_contract, btc_amount)
-        .await
-        .context("Failed to lock Bitcoin funds")?;
-
-    info!("Bitcoin locked successfully!");
-    info!("Amount: {} BTC", btc_amount.to_btc());
-    info!("TxID: {}", lock_txid);
-    info!("HTLC: {}", htlc_address);
-
-    info!("Waiting for Bitcoin confirmation...");
-    let mut btc_confirmed = false;
-    for i in 0..30 {
-        // Wait up to 5 minutes
-        tokio::time::sleep(Duration::from_secs(10)).await;
-
-        let tx_info = btc_client.get_transaction_info(&lock_txid)?;
-        if tx_info.confirmations > 0 {
-            info!(
-                "Bitcoin transaction confirmed ({} confirmations)",
-                tx_info.confirmations
-            );
-            btc_confirmed = true;
-            break;
-        }
-
-        if i % 6 == 0 {
-            // Every minute
-            info!("Still waiting... ({}/30 attempts)", i + 1);
-        }
-    }
-
-    if !btc_confirmed {
-        warn!("Bitcoin transaction not confirmed yet, continuing anyway...");
-    }
-
-    info!("\nStep 2: Information for Seller");
-    info!("==================================");
-    info!("The seller should now commit the NFT on Ethereum using:");
-    info!("Secret Hash: {}", hex::encode(secret_hash.as_byte_array()));
-    info!("Token ID: {}", config.token_id);
-    info!("Price: {} wei", config.nft_price);
-    info!("Metadata: {}", config.metadata_uri);
-    info!("");
-    info!("Seller command:");
-    info!("cargo run -- commit-for-mint \\");
-    info!("     --seller-eth-key <SELLER_ETH_KEY> \\");
-    info!("     --nft-contract {} \\", config.nft_contract);
     info!(
-        "     --secret-hash {} \\",
-        hex::encode(secret_hash.as_byte_array())
+        htlc_address = %htlc_address,
+        seller_pubkey = %seller_pubkey,
+        buyer_pubkey = %buyer_pubkey,
+        timeout_blocks = %config.timeout,
+        "Created HTLC contract"
     );
-    info!("     --token-id {} \\", config.token_id);
-    info!("     --nft-price {} \\", config.nft_price);
-    info!("     --buyer-address {:?} \\", eth_client.get_address());
-    info!("     --metadata-uri '{}'", config.metadata_uri);
 
-    info!("\nWaiting for seller to commit NFT...");
-    let mut commitment_found = false;
-    for i in 0..60 {
-        // Wait up to 10 minutes
-        tokio::time::sleep(Duration::from_secs(10)).await;
+    let auth = Auth::UserPass(config.btc_user.clone(), config.btc_pass.clone());
+    let btc_client = BtcClient::new(&config.btc_rpc, auth, config.btc_network, buyer_keypair)
+        .context("Failed to initialize Bitcoin client")?;
 
-        match eth_client.get_commitment(U256::from(config.token_id)).await {
-            Ok(commitment) => {
-                if commitment.is_active && commitment.secret_hash == *secret_hash.as_byte_array() {
-                    info!("Seller commitment found!");
-                    info!("Seller: {:?}", commitment.seller);
-                    info!("Price: {} wei", commitment.price);
-                    info!("Commit Time: {}", commitment.commit_time);
-                    commitment_found = true;
-                    break;
-                }
-            }
-            Err(_) => {
-                // No commitment yet, continue waiting
-            }
-        }
-
-        if i % 6 == 0 {
-            // Every minute
-            info!("Still waiting for seller... ({}/60 attempts)", i + 1);
-        }
-    }
-
-    if !commitment_found {
-        error!("Seller commitment not found within timeout period");
-        info!("The seller needs to commit the NFT first. Run the seller command above.");
-        return Ok(());
-    }
-
-    info!("\nStep 3: Revealing Secret and Minting NFT");
-    info!("===========================================");
-
-    let can_mint = eth_client.can_mint_now(U256::from(config.token_id)).await?;
-    if !can_mint {
-        warn!("Cannot mint yet, waiting for minimum commitment time...");
-
-        // Wait up to 5 minutes for the timing constraint
-        for i in 0..30 {
-            tokio::time::sleep(Duration::from_secs(10)).await;
-
-            if eth_client.can_mint_now(U256::from(config.token_id)).await? {
-                info!("Minimum commitment time has passed, can mint now!");
-                break;
-            }
-
-            if i == 29 {
-                return Err(anyhow::anyhow!("Timeout waiting for mint availability"));
-            }
-        }
-    }
-
-    let mint_tx = eth_client
-        .mint_with_secret(secret, U256::from(config.token_id))
+    let eth_client = EthClient::new(&config.eth_rpc, &config.buyer_eth_key, config.nft_contract)
         .await
-        .context("Failed to mint NFT")?;
+        .context("Failed to initialize Ethereum client")?;
 
-    info!("NFT minted successfully!");
-    info!("Transaction: {mint_tx:?}");
-    info!("Secret revealed on Ethereum");
-
-    info!("Waiting for Ethereum confirmation...");
-    for i in 0..30 {
-        // Wait up to 5 minutes
-        tokio::time::sleep(Duration::from_secs(10)).await;
-
-        let tx_info = eth_client.get_transaction_info(mint_tx).await?;
-        if let Some(c) = tx_info.confirmations
-            && c > 0
-        {
-            info!("Ethereum transaction confirmed ({c} confirmations)");
-            break;
-        }
-
-        if i % 6 == 0 {
-            // Every minute
-            info!("Still waiting... ({}/30 attempts)", i + 1);
-        }
-    }
-
-    info!("\nStep 4: Information for Seller to Claim Bitcoin");
-    info!("=================================================");
-    info!("The seller can now claim Bitcoin using the revealed secret:");
-    info!("Secret:  {}", hex::encode(secret));
-    info!("Secret Hash: {}", hex::encode(secret_hash.as_byte_array()));
-    info!("Lock TxID: {lock_txid}");
-    info!("Lock Vout: 0");
-    info!("");
-    info!("Seller command:");
-    info!("   cargo run -- claim-btc \\");
-    info!("     --seller-btc-key <SELLER_BTC_KEY> \\");
-    info!("     --buyer-btc-pubkey {} \\", buyer_pubkey);
-    info!("     --secret {} \\", hex::encode(secret));
     info!(
-        "     --secret-hash {} \\",
-        hex::encode(secret_hash.as_byte_array())
+        btc_network = %config.btc_network,
+        eth_contract = %config.nft_contract,
+        buyer_eth_address = %eth_client.get_address(),
+        "Connected to blockchain networks"
     );
-    info!("     --lock-txid {} \\", lock_txid);
-    info!("     --lock-vout 0 \\");
-    info!("     --timeout {}", config.timeout);
 
-    info!("\nDemo completed successfully!");
-    info!("================================");
+    let lock_txid = execute_bitcoin_lock(&btc_client, &btc_contract, config.btc_amount).await?;
+
+    wait_for_seller_commitment(&eth_client, &config, &secret_hash, &htlc_address).await?;
+
+    let mint_tx = execute_nft_mint(&eth_client, secret, config.token_id).await?;
+
+    provide_claim_instructions(&config, &secret, &secret_hash, lock_txid, &buyer_pubkey);
+
+    info!(
+        lock_txid = %lock_txid,
+        mint_tx = %mint_tx,
+        "Cross-chain atomic swap completed successfully"
+    );
 
     Ok(())
 }
 
-async fn run_commit_for_mint(config: CommitForMintConfig) -> Result<()> {
-    info!("Seller: Committing NFT for minting");
-    info!("=====================================");
+async fn execute_bitcoin_lock(
+    btc_client: &BtcClient,
+    btc_contract: &BtcContract,
+    btc_amount: u64,
+) -> Result<bitcoin::Txid> {
+    info!("Initiating Bitcoin lock transaction");
 
-    let eth_client =
-        EthClient::new(&config.eth_rpc, &config.seller_eth_key, config.nft_contract).await?;
+    let amount = Amount::from_sat(btc_amount);
+    let lock_txid = btc_client
+        .lock_funds(btc_contract, amount)
+        .await
+        .context("Failed to lock Bitcoin funds")?;
 
-    info!("Connected to Ethereum");
-    info!("Contract: {:?}", config.nft_contract);
-    info!("Seller: {:?}", eth_client.get_address());
+    info!(
+        txid = %lock_txid,
+        amount_btc = %amount.to_btc(),
+        htlc_address = %btc_contract.address(),
+        "Bitcoin funds locked successfully"
+    );
 
-    match eth_client.get_commitment(U256::from(config.token_id)).await {
-        Ok(commitment) => {
-            if commitment.is_active {
-                error!("Token {} already has an active commitment", config.token_id);
-                return Err(anyhow::anyhow!("Token already committed"));
+    let confirmation_start = Instant::now();
+    loop {
+        if confirmation_start.elapsed() > MAX_BTC_CONFIRMATION_WAIT {
+            warn!("Bitcoin confirmation timeout reached, proceeding anyway");
+            break;
+        }
+
+        match btc_client.get_transaction_info(&lock_txid) {
+            Ok(tx_info) if tx_info.confirmations > 0 => {
+                info!(
+                    confirmations = tx_info.confirmations,
+                    duration_secs = confirmation_start.elapsed().as_secs(),
+                    "Bitcoin transaction confirmed"
+                );
+                break;
+            }
+            Ok(_) => {
+                debug!("Waiting for Bitcoin confirmation...");
+                sleep(CONFIRMATION_CHECK_INTERVAL).await;
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to check Bitcoin transaction status");
+                sleep(CONFIRMATION_CHECK_INTERVAL).await;
             }
         }
-        Err(_) => {
-            // No existing commitment, proceed
+    }
+
+    Ok(lock_txid)
+}
+
+#[instrument(skip_all, fields(token_id = %config.token_id))]
+async fn wait_for_seller_commitment(
+    eth_client: &EthClient,
+    config: &AtomicSwapConfig,
+    secret_hash: &sha256::Hash,
+    htlc_address: &bitcoin::Address,
+) -> Result<()> {
+    info!("Waiting for seller NFT commitment on Ethereum");
+
+    // Provide seller instructions
+    print_seller_instructions(config, secret_hash, htlc_address, eth_client.get_address());
+
+    let wait_start = Instant::now();
+    loop {
+        if wait_start.elapsed() > MAX_COMMITMENT_WAIT {
+            return Err(anyhow::anyhow!(
+                "Timeout waiting for seller commitment after {} seconds",
+                MAX_COMMITMENT_WAIT.as_secs()
+            ));
+        }
+
+        match timeout(
+            POLL_INTERVAL,
+            eth_client.get_commitment(U256::from(config.token_id)),
+        )
+        .await
+        {
+            Ok(Ok(commitment)) => {
+                if commitment.is_active && commitment.secret_hash == *secret_hash.as_byte_array() {
+                    info!(
+                        seller = %commitment.seller,
+                        price_wei = %commitment.price,
+                        commit_time = %commitment.commit_time,
+                        duration_secs = wait_start.elapsed().as_secs(),
+                        "Seller commitment verified successfully"
+                    );
+                    return Ok(());
+                } else if commitment.is_active {
+                    warn!("Found commitment but secret hash mismatch");
+                }
+            }
+            Ok(Err(_)) => {
+                debug!("No commitment found yet, continuing to wait");
+            }
+            Err(_) => {
+                debug!("Commitment check timed out, retrying");
+            }
+        }
+
+        sleep(POLL_INTERVAL).await;
+    }
+}
+
+async fn execute_nft_mint(
+    eth_client: &EthClient,
+    secret: [u8; 32],
+    token_id: u64,
+) -> Result<ethers::types::H256> {
+    info!("Executing NFT mint with secret reveal");
+    if !eth_client.can_mint_now(U256::from(token_id)).await? {
+        info!("Waiting for minimum commitment time to pass");
+
+        let wait_start = Instant::now();
+        loop {
+            if wait_start.elapsed() > Duration::from_secs(300) {
+                // 5 minutes max
+                return Err(anyhow::anyhow!("Timeout waiting for mint availability"));
+            }
+
+            if eth_client.can_mint_now(U256::from(token_id)).await? {
+                info!("Minimum commitment time passed, proceeding with mint");
+                break;
+            }
+
+            sleep(Duration::from_secs(10)).await;
+        }
+    }
+
+    let mint_tx = eth_client
+        .mint_with_secret(secret, U256::from(token_id))
+        .await
+        .context("Failed to execute NFT mint transaction")?;
+
+    info!(
+        tx_hash = %mint_tx,
+        secret_revealed = %hex::encode(secret),
+        "NFT minted successfully, secret revealed on Ethereum"
+    );
+
+    let confirmation_start = Instant::now();
+    loop {
+        if confirmation_start.elapsed() > MAX_ETH_CONFIRMATION_WAIT {
+            warn!("Ethereum confirmation timeout reached");
+            break;
+        }
+
+        match timeout(
+            CONFIRMATION_CHECK_INTERVAL,
+            eth_client.get_transaction_info(mint_tx),
+        )
+        .await
+        {
+            Ok(Ok(tx_info)) => {
+                if let Some(c) = tx_info.confirmations
+                    && c > 0
+                {
+                    info!(
+                        confirmations = c,
+                        duration_secs = confirmation_start.elapsed().as_secs(),
+                        "Ethereum transaction confirmed"
+                    );
+                    break;
+                }
+            }
+            Ok(Err(e)) => {
+                warn!(error = %e, "Failed to check Ethereum transaction status");
+            }
+            Err(_) => {
+                debug!("Transaction status check timed out");
+            }
+        }
+
+        sleep(CONFIRMATION_CHECK_INTERVAL).await;
+    }
+
+    Ok(mint_tx)
+}
+
+fn print_seller_instructions(
+    config: &AtomicSwapConfig,
+    secret_hash: &sha256::Hash,
+    htlc_address: &bitcoin::Address,
+    buyer_eth_address: ethers::types::Address,
+) {
+    info!("=== SELLER INSTRUCTIONS ===");
+    info!("Bitcoin has been locked in HTLC: {htlc_address}");
+    info!("Secret Hash: {}", hex::encode(secret_hash.as_byte_array()));
+    info!("To commit the NFT for minting, run:");
+    info!("");
+    info!("cargo run -- commit-for-mint \\");
+    info!("  --seller-eth-key <YOUR_ETH_PRIVATE_KEY> \\");
+    info!("  --nft-contract {} \\", config.nft_contract);
+    info!(
+        "  --secret-hash {} \\",
+        hex::encode(secret_hash.as_byte_array())
+    );
+    info!("  --token-id {} \\", config.token_id);
+    info!("  --nft-price {} \\", config.nft_price);
+    info!("  --buyer-address {} \\", buyer_eth_address);
+    info!("  --metadata-uri '{}'", config.metadata_uri);
+    info!("");
+    info!("===============================");
+}
+
+fn provide_claim_instructions(
+    config: &AtomicSwapConfig,
+    secret: &[u8; 32],
+    secret_hash: &sha256::Hash,
+    lock_txid: bitcoin::Txid,
+    buyer_pubkey: &PublicKey,
+) {
+    info!("=== SELLER CLAIM INSTRUCTIONS ===");
+    info!("The secret has been revealed on Ethereum");
+    info!("Secret: {}", hex::encode(secret));
+    info!("To claim the Bitcoin, run:");
+    info!("");
+    info!("cargo run -- claim-btc \\");
+    info!("  --seller-btc-key <YOUR_BTC_PRIVATE_KEY> \\");
+    info!("  --buyer-btc-pubkey {} \\", buyer_pubkey);
+    info!("  --secret {} \\", hex::encode(secret));
+    info!(
+        "  --secret-hash {} \\",
+        hex::encode(secret_hash.as_byte_array())
+    );
+    info!("  --lock-txid {} \\", lock_txid);
+    info!("  --lock-vout 0 \\");
+    info!("  --timeout {}", config.timeout);
+    info!("");
+    info!("==================================");
+}
+
+async fn execute_commit_for_mint(config: CommitForMintConfig) -> Result<()> {
+    info!(
+        nft_contract = %config.nft_contract,
+        token_id = %config.token_id,
+        secret_hash = %hex::encode(config.secret_hash),
+        "Executing NFT commitment for minting"
+    );
+
+    let eth_client = EthClient::new(&config.eth_rpc, &config.seller_eth_key, config.nft_contract)
+        .await
+        .context("Failed to initialize Ethereum client")?;
+
+    info!(
+        seller_address = %eth_client.get_address(),
+        "Connected to Ethereum as seller"
+    );
+
+    match eth_client.get_commitment(U256::from(config.token_id)).await {
+        Ok(commitment) if commitment.is_active => {
+            return Err(anyhow::anyhow!(
+                "Token {} already has an active commitment from seller {:?}",
+                config.token_id,
+                commitment.seller
+            ));
+        }
+        Ok(_) => {
+            debug!("No existing commitment found, proceeding");
+        }
+        Err(e) => {
+            debug!(error = %e, "Error checking existing commitment, proceeding anyway");
         }
     }
 
@@ -396,56 +504,50 @@ async fn run_commit_for_mint(config: CommitForMintConfig) -> Result<()> {
             config.buyer_address,
             config.metadata_uri.clone(),
         )
-        .await?;
+        .await
+        .context("Failed to commit NFT for minting")?;
 
-    info!("NFT commitment created successfully!");
-    info!("Transaction: {tx_hash:?}");
-    info!("Token ID: {}", config.token_id);
-    info!("Secret Hash: {}", hex::encode(config.secret_hash));
-    info!("Price: {} wei", config.nft_price);
     info!(
-        "Buyer: {:?}",
-        config
-            .buyer_address
-            .unwrap_or_else(|| "Any".parse().unwrap())
+        tx_hash = %tx_hash,
+        token_id = %config.token_id,
+        price_wei = %config.nft_price,
+        buyer_restriction = ?config.buyer_address,
+        metadata_uri = %config.metadata_uri,
+        "NFT commitment transaction submitted"
     );
-    info!("Metadata: {}", config.metadata_uri);
 
-    info!("Waiting for confirmation...");
-    for i in 0..30 {
-        tokio::time::sleep(Duration::from_secs(10)).await;
+    wait_for_ethereum_confirmation(&eth_client, tx_hash, "commitment").await?;
 
-        let tx_info = eth_client.get_transaction_info(tx_hash).await?;
-        if let Some(c) = tx_info.confirmations
-            && c > 0
-        {
-            info!("Transaction confirmed ({c} confirmations)");
-            break;
-        }
-        if i == 29 {
-            warn!("Transaction not confirmed within timeout, but likely successful");
-        }
-    }
-    info!("Commitment completed! The buyer can now reveal the secret to mint the NFT.");
-
+    info!("NFT commitment completed successfully. Buyer can now reveal secret to mint.");
     Ok(())
 }
 
-async fn run_claim_bitcoin(config: ClaimBtcConfig) -> Result<()> {
-    info!("Seller: Claiming Bitcoin with revealed secret");
-    info!("===============================================");
+#[instrument(skip_all)]
+async fn execute_claim_bitcoin(config: ClaimBtcConfig) -> Result<()> {
+    info!(
+        lock_txid = %config.lock_txid,
+        lock_vout = %config.lock_vout,
+        "Executing Bitcoin claim with revealed secret"
+    );
 
+    // Verify secret matches hash
     let computed_hash = sha256::Hash::hash(&config.secret);
     if computed_hash.as_byte_array() != &config.secret_hash {
-        return Err(anyhow::anyhow!("Secret does not match provided hash"));
+        return Err(anyhow::anyhow!(
+            "Secret verification failed: computed hash {} doesn't match provided hash {}",
+            hex::encode(computed_hash.as_byte_array()),
+            hex::encode(config.secret_hash)
+        ));
     }
 
-    info!("Secret verification passed");
-    info!("Secret: {}", hex::encode(config.secret));
-    info!("Hash: {}", hex::encode(config.secret_hash));
+    info!(
+        secret_verified = true,
+        secret_hash = %hex::encode(config.secret_hash),
+        "Secret verification passed"
+    );
 
-    let seller_keypair = config.seller_btc_key.parse::<Keypair>()?;
-    let buyer_pubkey: PublicKey = config.buyer_btc_pubkey.parse()?;
+    let seller_keypair = validate_btc_key(&config.seller_btc_key, "seller")?;
+    let buyer_pubkey = validate_btc_pubkey(&config.buyer_btc_pubkey, "buyer")?;
     let seller_pubkey = PublicKey::from(seller_keypair.public_key());
 
     let contract_params = HtlcParams {
@@ -457,15 +559,16 @@ async fn run_claim_bitcoin(config: ClaimBtcConfig) -> Result<()> {
     };
     let btc_contract = BtcContract::new(contract_params);
 
-    info!("HTLC Contract Details");
-    info!("Address: {}", btc_contract.address());
-    info!("Seller: {}", seller_pubkey);
-    info!("Buyer: {}", buyer_pubkey);
+    info!(
+        htlc_address = %btc_contract.address(),
+        seller_pubkey = %seller_pubkey,
+        buyer_pubkey = %buyer_pubkey,
+        "Reconstructed HTLC contract"
+    );
 
-    let auth = Auth::UserPass(config.btc_user, config.btc_pass);
-    let btc_client = BtcClient::new(&config.btc_rpc, auth, config.btc_network, seller_keypair)?;
-
-    info!("Connected to Bitcoin {}", config.btc_network);
+    let auth = Auth::UserPass(config.btc_user.clone(), config.btc_pass.clone());
+    let btc_client = BtcClient::new(&config.btc_rpc, auth, config.btc_network, seller_keypair)
+        .context("Failed to initialize Bitcoin client")?;
 
     let claim_tx = btc_client
         .claim_funds(
@@ -475,128 +578,227 @@ async fn run_claim_bitcoin(config: ClaimBtcConfig) -> Result<()> {
             config.lock_vout,
             config.destination.clone(),
         )
-        .await?;
+        .await
+        .context("Failed to claim Bitcoin funds")?;
 
-    info!("Bitcoin claimed successfully!");
-    info!("Claim TxID: {}", claim_tx);
-    info!("From HTLC: {}:{}", config.lock_txid, config.lock_vout);
+    info!(
+        claim_txid = %claim_tx,
+        from_htlc = %format!("{}:{}", config.lock_txid, config.lock_vout),
+        destination = ?config.destination.as_ref().map(|d| d.to_string()).unwrap_or_else(|| "seller wallet".to_string()),
+        "Bitcoin claimed successfully"
+    );
 
-    if let Some(dest) = config.destination {
-        info!("To Address: {dest}");
-    } else {
-        info!("To Address: <seller's wallet>");
+    info!("Cross-chain atomic swap fully completed - all parties have received their assets");
+    Ok(())
+}
+
+#[instrument(skip_all)]
+async fn execute_monitor(config: MonitorConfig) -> Result<()> {
+    info!(
+        btc_network = %config.btc_network,
+        nft_contract = %config.nft_contract,
+        "Starting cross-chain event monitor"
+    );
+
+    let auth = Auth::UserPass(config.btc_user.clone(), config.btc_pass.clone());
+    let dummy_keypair = Keypair::new(&Secp256k1::new(), &mut rand::thread_rng());
+
+    let btc_client = Arc::new(
+        BtcClient::new(&config.btc_rpc, auth, config.btc_network, dummy_keypair)
+            .context("Failed to initialize Bitcoin client")?,
+    );
+
+    let eth_client = Arc::new(
+        EthClient::new(&config.eth_rpc, &config.eth_key, config.nft_contract)
+            .await
+            .context("Failed to initialize Ethereum client")?,
+    );
+
+    info!("Connected to both networks, starting event monitoring");
+
+    let (tx, mut rx) = mpsc::channel::<String>(1000);
+
+    let btc_client_clone = btc_client.clone();
+    let tx_btc = tx.clone();
+    let btc_monitor = tokio::spawn(
+        async move {
+            if let Err(e) = btc_client_clone
+                .monitor_blocks(move |height| {
+                    let _ = tx_btc.try_send(format!("Bitcoin block #{height}"));
+                    Ok(())
+                })
+                .await
+            {
+                error!(error = %e, "Bitcoin monitoring failed");
+            }
+        }
+        .instrument(tracing::info_span!("btc_monitor")),
+    );
+
+    let eth_client_clone = eth_client.clone();
+    let tx_eth = tx.clone();
+    let eth_monitor = tokio::spawn(
+        async move {
+            if let Err(e) = eth_client_clone
+                .monitor_events(move |event| {
+                    let event_str = format_swap_event(&event);
+                    let _ = tx_eth.try_send(event_str);
+                    Ok(())
+                })
+                .await
+            {
+                error!(error = %e, "Ethereum monitoring failed");
+            }
+        }
+        .instrument(tracing::info_span!("eth_monitor")),
+    );
+
+    info!("Event monitoring active. Press Ctrl+C to stop.");
+
+    tokio::select! {
+        _ = async {
+            while let Some(event) = rx.recv().await {
+                info!("Event: {}", event);
+            }
+        } => {}
+        _ = tokio::signal::ctrl_c() => {
+            info!("Shutdown signal received");
+        }
     }
-    info!("Bitcoin claim completed! The cross-chain atomic swap is now fully complete.");
+
+    info!("Shutting down monitoring tasks...");
+    btc_monitor.abort();
+    eth_monitor.abort();
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    info!("Event monitoring stopped");
 
     Ok(())
 }
 
-async fn run_monitor(config: MonitorConfig) -> Result<()> {
-    info!("Starting Cross-Chain Event Monitor");
-    info!("====================================");
+async fn wait_for_ethereum_confirmation(
+    eth_client: &EthClient,
+    tx_hash: ethers::types::H256,
+    operation: &str,
+) -> Result<()> {
+    info!(tx_hash = %tx_hash, operation, "Waiting for Ethereum confirmation");
 
-    let auth = Auth::UserPass(config.btc_user, config.btc_pass);
-    // TODO: Use actual keypair
-    let dummy_keypair = Keypair::new(&Secp256k1::new(), &mut rand::thread_rng());
-
-    let btc_client = Arc::new(BtcClient::new(
-        &config.btc_rpc,
-        auth,
-        config.btc_network,
-        dummy_keypair,
-    )?);
-    let eth_client =
-        Arc::new(EthClient::new(&config.eth_rpc, &config.eth_key, config.nft_contract).await?);
-
-    info!("Connected to Bitcoin {}", config.btc_network);
-    info!("Connected to Ethereum");
-    info!("Contract: {:?}", config.nft_contract);
-
-    let (tx, mut rx) = mpsc::channel::<String>(100);
-
-    let btc_client_clone = btc_client.clone();
-    let tx_btc = tx.clone();
-    let btc_monitor = tokio::spawn(async move {
-        if let Err(e) = btc_client_clone
-            .monitor_blocks(move |height| {
-                let _ = tx_btc.try_send(format!("New Bitcoin block: {height}"));
-                Ok(())
-            })
-            .await
-        {
-            error!("Bitcoin monitoring error: {e}");
-        }
-    });
-
-    let eth_client_clone = eth_client.clone();
-    let tx_eth = tx.clone();
-    let eth_monitor = tokio::spawn(async move {
-        if let Err(e) = eth_client_clone
-            .monitor_events(move |event| {
-                let event_str = match event {
-                    SwapEvent::EthCommitted {
-                        tx_hash,
-                        token_id,
-                        secret_hash,
-                    } => {
-                        format!(
-                            "NFT Committed - Token: {token_id}, Hash: {}, Tx: {tx_hash}",
-                            hex::encode(secret_hash)
-                        )
-                    }
-                    SwapEvent::SecretRevealed {
-                        tx_hash,
-                        secret,
-                        token_id,
-                    } => {
-                        format!(
-                            "Secret Revealed - Token: {token_id}, Secret: {}, Tx: {tx_hash}",
-                            hex::encode(secret)
-                        )
-                    }
-                    SwapEvent::NFTMinted {
-                        tx_hash,
-                        token_id,
-                        owner,
-                    } => {
-                        format!("NFT Minted - Token: {token_id}, Owner: {owner:?}, Tx: {tx_hash}")
-                    }
-                    _ => format!("Other event: {event:?}"),
-                };
-                let _ = tx_eth.try_send(event_str);
-                Ok(())
-            })
-            .await
-        {
-            error!("Ethereum monitoring error: {e}");
-        }
-    });
-
-    info!("Monitoring started! Press Ctrl+C to stop.");
-    info!("Events will be displayed as they occur...");
-
+    let start_time = Instant::now();
     loop {
-        tokio::select! {
-            Some(event) = rx.recv() => {
-                info!("{event}");
+        if start_time.elapsed() > MAX_ETH_CONFIRMATION_WAIT {
+            warn!(
+                duration_secs = start_time.elapsed().as_secs(),
+                "Ethereum confirmation timeout, but transaction likely successful"
+            );
+            break;
+        }
+
+        match timeout(
+            CONFIRMATION_CHECK_INTERVAL,
+            eth_client.get_transaction_info(tx_hash),
+        )
+        .await
+        {
+            Ok(Ok(tx_info)) => {
+                if let Some(c) = tx_info.confirmations
+                    && c > 0
+                {
+                    info!(
+                        confirmations = c,
+                        duration_secs = start_time.elapsed().as_secs(),
+                        operation,
+                        "Ethereum transaction confirmed"
+                    );
+                    return Ok(());
+                }
             }
-            _ = tokio::signal::ctrl_c() => {
-                info!("Monitoring stopped by user");
-                break;
+            Ok(Err(e)) => {
+                debug!(error = %e, "Failed to check transaction status");
+            }
+            Err(_) => {
+                debug!("Transaction status check timed out");
             }
         }
+
+        sleep(CONFIRMATION_CHECK_INTERVAL).await;
     }
 
-    btc_monitor.abort();
-    eth_monitor.abort();
-
     Ok(())
+}
+
+fn format_swap_event(event: &SwapEvent) -> String {
+    match event {
+        SwapEvent::EthCommitted {
+            tx_hash,
+            token_id,
+            secret_hash,
+        } => {
+            format!(
+                "NFT Committed - Token: {}, Hash: {}, Tx: {}",
+                token_id,
+                hex::encode(secret_hash),
+                tx_hash
+            )
+        }
+        SwapEvent::SecretRevealed {
+            tx_hash,
+            secret,
+            token_id,
+        } => {
+            format!(
+                "Secret Revealed - Token: {}, Secret: {}, Tx: {}",
+                token_id,
+                hex::encode(secret),
+                tx_hash
+            )
+        }
+        SwapEvent::NFTMinted {
+            tx_hash,
+            token_id,
+            owner,
+        } => {
+            format!(
+                "NFT Minted - Token: {}, Owner: {:?}, Tx: {}",
+                token_id, owner, tx_hash
+            )
+        }
+        _ => format!("Swap Event: {:?}", event),
+    }
+}
+
+fn validate_btc_key(key: &str, role: &str) -> Result<Keypair> {
+    key.parse::<Keypair>()
+        .with_context(|| format!("Invalid Bitcoin private key for {}", role))
+}
+
+fn validate_btc_pubkey(key: &str, role: &str) -> Result<PublicKey> {
+    key.parse::<PublicKey>()
+        .with_context(|| format!("Invalid Bitcoin public key for {}", role))
+}
+
+fn decode_hex_hash(hex_str: &str, field_name: &str) -> Result<[u8; 32]> {
+    let bytes =
+        hex::decode(hex_str).with_context(|| format!("Invalid hex encoding for {}", field_name))?;
+
+    bytes.clone().try_into().map_err(|_| {
+        anyhow::anyhow!(
+            "Invalid {} length: expected 32 bytes, got {}",
+            field_name,
+            bytes.len()
+        )
+    })
+}
+
+fn decode_hex_secret(hex_str: &str) -> Result<[u8; 32]> {
+    decode_hex_hash(hex_str, "secret")
 }
 
 fn parse_btc_address(addr: &str, network: Network) -> Result<bitcoin::Address> {
     let addr = addr
-        .parse::<bitcoin::Address<NetworkUnchecked>>()?
-        .require_network(network)?;
+        .parse::<bitcoin::Address<NetworkUnchecked>>()
+        .context("Invalid Bitcoin address format")?
+        .require_network(network)
+        .context("Bitcoin address network mismatch")?;
     Ok(addr)
 }
 
@@ -606,6 +808,45 @@ fn parse_network(network: &str) -> Result<Network> {
         "testnet" | "test" => Ok(Network::Testnet),
         "signet" => Ok(Network::Signet),
         "regtest" | "reg" => Ok(Network::Regtest),
-        _ => Err(anyhow::anyhow!("Invalid network: {network}")),
+        _ => Err(anyhow::anyhow!(
+            "Invalid network '{}'. Supported: mainnet, testnet, signet, regtest",
+            network
+        )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_network() {
+        assert!(matches!(
+            parse_network("mainnet").unwrap(),
+            Network::Bitcoin
+        ));
+        assert!(matches!(
+            parse_network("testnet").unwrap(),
+            Network::Testnet
+        ));
+        assert!(matches!(parse_network("signet").unwrap(), Network::Signet));
+        assert!(matches!(
+            parse_network("regtest").unwrap(),
+            Network::Regtest
+        ));
+
+        assert!(parse_network("invalid").is_err());
+    }
+
+    #[test]
+    fn test_decode_hex_hash() {
+        let valid_hash = "a".repeat(64); // 32 bytes in hex
+        assert!(decode_hex_hash(&valid_hash, "test").is_ok());
+
+        let invalid_length = "a".repeat(30); // 15 bytes in hex
+        assert!(decode_hex_hash(&invalid_length, "test").is_err());
+
+        let invalid_hex = "zz".repeat(32);
+        assert!(decode_hex_hash(&invalid_hex, "test").is_err());
     }
 }
