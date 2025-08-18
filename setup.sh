@@ -9,10 +9,9 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-# Configuration
-BITCOIN_DATA_DIR="$HOME/.bitcoin"
-BITCOIN_CONF="$BITCOIN_DATA_DIR/bitcoin.conf"
 SETUP_DIR="$(pwd)"
+BITCOIN_DATA_DIR="$SETUP_DIR/.bitcoin"
+BITCOIN_CONF="$BITCOIN_DATA_DIR/bitcoin.conf"
 LOG_FILE="$SETUP_DIR/setup.log"
 
 # Helper functions
@@ -29,6 +28,7 @@ warn() {
 error() {
     echo -e "${RED}[ERROR]${NC} $1"
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: $1" >> "$LOG_FILE"
+    exit 1
 }
 
 success() {
@@ -38,22 +38,62 @@ success() {
 
 check_command() {
     if ! command -v "$1" &> /dev/null; then
-        error "$1 is not installed. Please install it first."
+        warn "$1 is not installed."
         return 1
     fi
     return 0
 }
 
+install_jq() {
+    log "Installing jq for JSON parsing..."
+    if command -v apt-get &> /dev/null; then
+        sudo apt-get update && sudo apt-get install -y jq
+    elif command -v brew &> /dev/null; then
+        brew install jq
+    elif command -v yum &> /dev/null; then
+        sudo yum install -y jq
+    else
+        error "Could not install jq automatically. Please install manually: https://stedolan.github.io/jq/download/"
+    fi
+}
+
+stop_bitcoin_processes() {
+    log "Checking for existing Bitcoin processes..."
+    
+    # Stop Bitcoin Core using bitcoin-cli if it's running
+    if command -v bitcoin-cli &> /dev/null; then
+        # Try different possible configurations
+        bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" stop 2>/dev/null && log "Stopped Bitcoin via bitcoin-cli (project datadir)" || true
+        bitcoin-cli -regtest stop 2>/dev/null && log "Stopped Bitcoin via bitcoin-cli (default)" || true
+    fi
+    
+    # Wait a moment for graceful shutdown
+    sleep 3
+    
+    # Force kill any remaining bitcoind processes
+    if pgrep -f "bitcoind" > /dev/null; then
+        warn "Force killing remaining bitcoind processes..."
+        pkill -f "bitcoind" 2>/dev/null || true
+        sleep 2
+    fi
+    
+    # Check if any Bitcoin processes are still running
+    if pgrep -f "bitcoind" > /dev/null; then
+        error "Could not stop existing bitcoind processes. Please stop them manually and try again."
+    fi
+    
+    success "No Bitcoin processes running"
+}
+
 wait_for_service() {
     local service_name="$1"
-    local check_command="$2"
     local max_attempts=30
     local attempt=1
     
     log "Waiting for $service_name to start..."
     
     while [ $attempt -le $max_attempts ]; do
-        if eval "$check_command" &>/dev/null; then
+        if bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" getnetworkinfo &>/dev/null; then
             success "$service_name is ready!"
             return 0
         fi
@@ -67,35 +107,63 @@ wait_for_service() {
     return 1
 }
 
+wait_for_ethereum() {
+    local max_attempts=30
+    local attempt=1
+    
+    log "Waiting for Ethereum node to start..."
+    
+    while [ $attempt -le $max_attempts ]; do
+        if curl -s -X POST -H 'Content-Type: application/json' \
+            --data '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' \
+            http://localhost:8545 &>/dev/null; then
+            success "Ethereum node is ready!"
+            return 0
+        fi
+        
+        echo -n "."
+        sleep 2
+        ((attempt++))
+    done
+    
+    error "Ethereum node failed to start within $((max_attempts * 2)) seconds"
+    return 1
+}
+
 # Main setup function
 main() {
     log "Starting Cross-Chain Secret Mint setup..."
     log "Setup log: $LOG_FILE"
+    log "Bitcoin data directory: $BITCOIN_DATA_DIR"
     
     # Clear previous log
     > "$LOG_FILE"
+    
+    # Stop any existing Bitcoin processes first
+    stop_bitcoin_processes
     
     # Check prerequisites
     log "Checking prerequisites..."
     
     if ! check_command "cargo"; then
         error "Rust/Cargo not found. Please install: https://rustup.rs/"
-        exit 1
     fi
     
     if ! check_command "node"; then
         error "Node.js not found. Please install Node.js 18+: https://nodejs.org/"
-        exit 1
     fi
     
     if ! check_command "npm"; then
         error "npm not found. Please install Node.js with npm."
-        exit 1
+    fi
+    
+    if ! check_command "jq"; then
+        install_jq
     fi
     
     # Check for Bitcoin Core
     if ! check_command "bitcoind" || ! check_command "bitcoin-cli"; then
-        warn "Bitcoin Core not found. Attempting to install via package manager..."
+        warn "Bitcoin Core not found. Attempting to install..."
         
         if command -v apt-get &> /dev/null; then
             log "Installing Bitcoin Core via apt-get..."
@@ -104,8 +172,7 @@ main() {
             log "Installing Bitcoin Core via Homebrew..."
             brew install bitcoin
         else
-            error "Could not install Bitcoin Core automatically. Please install manually."
-            exit 1
+            error "Could not install Bitcoin Core automatically. Please install manually: https://bitcoin.org/en/download"
         fi
     fi
     
@@ -113,10 +180,14 @@ main() {
     
     # Build Rust client
     log "Building Rust client..."
-    cd "$SETUP_DIR/client"
-    cargo build --release
-    cd "$SETUP_DIR"
-    success "Rust client built successfully!"
+    if [ -d "$SETUP_DIR/client" ]; then
+        cd "$SETUP_DIR/client"
+        cargo build --release
+        cd "$SETUP_DIR"
+        success "Rust client built successfully!"
+    else
+        warn "Client directory not found, skipping Rust build"
+    fi
     
     # Setup Bitcoin
     setup_bitcoin
@@ -137,62 +208,75 @@ main() {
 setup_bitcoin() {
     log "Setting up Bitcoin regtest environment..."
     
-    # Create Bitcoin data directory
+    # Create Bitcoin data directory in project root
     mkdir -p "$BITCOIN_DATA_DIR"
     
-    # Create bitcoin.conf
+    # Create bitcoin.conf with better configuration
     log "Creating Bitcoin configuration..."
     cat > "$BITCOIN_CONF" << 'EOF'
-# Regtest configuration for cross-chain demo
-regtest=1
+# Global configuration
 server=1
+rest=1
+txindex=1
+fallbackfee=0.0001
+debug=1
+logips=1
+dbcache=300
+maxmempool=50
+daemon=1
+
+# Regtest specific configuration
+[regtest]
 rpcuser=user
 rpcpassword=password
 rpcport=18443
 rpcbind=127.0.0.1
 rpcallowip=127.0.0.1
-txindex=1
-fallbackfee=0.0001
-
-# Logging
-debug=1
-logips=1
-
-# Performance
-dbcache=300
-maxmempool=50
+port=18444
+listen=1
+discover=0
 EOF
+
+    log "Starting bitcoind in regtest mode with custom data directory..."
+    bitcoind -regtest -datadir="$BITCOIN_DATA_DIR" -daemon
     
-    # Stop any existing bitcoind
-    if pgrep -f "bitcoind.*regtest" > /dev/null; then
-        log "Stopping existing bitcoind..."
-        bitcoin-cli -regtest stop 2>/dev/null || true
-        sleep 3
-    fi
-    
-    # Start bitcoind
-    log "Starting bitcoind in regtest mode..."
-    bitcoind -daemon
-    
-    # Wait for bitcoind to start
-    wait_for_service "bitcoind" "bitcoin-cli -regtest getnetworkinfo"
+    wait_for_service "bitcoind"
     
     # Create wallet if it doesn't exist
     log "Setting up Bitcoin wallet..."
-    if ! bitcoin-cli -regtest listwallets | grep -q "testwallet"; then
-        bitcoin-cli -regtest createwallet "testwallet" false false "" false false true
+    local existing_wallets
+    if existing_wallets=$(bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" listwallets 2>/dev/null); then
+        if ! echo "$existing_wallets" | grep -q "testwallet"; then
+            log "Creating new wallet 'testwallet'..."
+            bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" createwallet "testwallet" false false "" false true true
+        else
+            log "Wallet 'testwallet' already exists"
+        fi
+    else
+        warn "Could not list wallets, attempting to create..."
+        bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" createwallet "testwallet" false false "" false true true 2>/dev/null || true
     fi
     
     # Generate initial blocks
     log "Generating initial blocks and funding addresses..."
-    local address=$(bitcoin-cli -regtest getnewaddress "initial")
-    bitcoin-cli -regtest generatetoaddress 101 "$address" > /dev/null
+    local address
+    if address=$(bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" getnewaddress "initial" 2>/dev/null); then
+        bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" generatetoaddress 101 "$address" > /dev/null
+        log "Generated 101 blocks to address: $address"
+    else
+        error "Failed to generate new address for initial funding"
+    fi
     
     success "Bitcoin regtest environment ready!"
 }
 
 setup_ethereum() {
     log "Setting up Ethereum development environment..."
+    
+    if [ ! -d "$SETUP_DIR/agent/eth" ]; then
+        warn "Ethereum agent directory not found at $SETUP_DIR/agent/eth, skipping Ethereum setup"
+        return 0
+    fi
     
     cd "$SETUP_DIR/agent/eth"
     
@@ -208,6 +292,17 @@ setup_ethereum() {
     log "Starting Hardhat network..."
     
     # Kill any existing Hardhat processes
+    if [ -f hardhat.pid ]; then
+        local old_pid=$(cat hardhat.pid)
+        if ps -p "$old_pid" > /dev/null 2>&1; then
+            log "Stopping existing Hardhat process (PID: $old_pid)..."
+            kill "$old_pid" 2>/dev/null || true
+            sleep 2
+        fi
+        rm -f hardhat.pid
+    fi
+    
+    # Also kill by process name as backup
     pkill -f "hardhat node" 2>/dev/null || true
     sleep 2
     
@@ -217,17 +312,25 @@ setup_ethereum() {
     echo "$hardhat_pid" > hardhat.pid
     
     # Wait for Hardhat to start
-    wait_for_service "Hardhat node" "curl -s -X POST -H 'Content-Type: application/json' --data '{\"jsonrpc\":\"2.0\",\"method\":\"eth_blockNumber\",\"params\":[],\"id\":1}' http://localhost:8545"
+    wait_for_ethereum
     
-    # Deploy contract
-    log "Deploying NFT contract..."
-    local deploy_output=$(npx hardhat run scripts/deploy.js --network localhost)
-    local contract_address=$(echo "$deploy_output" | grep -o '0x[a-fA-F0-9]\{40\}' | head -1)
+    # Deploy contract with Ignition
+    log "Deploying NFT contract with Ignition..."
+    npx hardhat ignition deploy ignition/modules/NFTSecretMint.ts --network localhost
     
-    if [ -z "$contract_address" ]; then
-        error "Failed to extract contract address from deployment"
-        cat hardhat.log
-        exit 1
+    # Get contract address from deployment artifacts
+    local deployment_file="ignition/deployments/chain-31337/deployed_addresses.json"
+    if [ ! -f "$deployment_file" ]; then
+        error "Deployment artifacts not found! Check hardhat.log for details"
+    fi
+    
+    local contract_address
+    if contract_address=$(jq -r '.["NFTSecretMintModule#NFTSecretMint"]' "$deployment_file" 2>/dev/null); then
+        if [ -z "$contract_address" ] || [ "$contract_address" == "null" ]; then
+            error "Failed to extract contract address from $deployment_file"
+        fi
+    else
+        error "Failed to parse deployment file $deployment_file"
     fi
     
     # Save contract address
@@ -240,24 +343,46 @@ setup_ethereum() {
 
 generate_test_accounts() {
     log "Generating test accounts and keys..."
-    
-    # Generate Bitcoin addresses and keys
     log "Generating Bitcoin test accounts..."
-    
+
     # Buyer Bitcoin account
-    local buyer_btc_address=$(bitcoin-cli -regtest getnewaddress "buyer")
-    local buyer_btc_privkey=$(bitcoin-cli -regtest dumpprivkey "$buyer_btc_address")
-    local buyer_btc_pubkey=$(bitcoin-cli -regtest getaddressinfo "$buyer_btc_address" | grep -o '"pubkey":"[^"]*"' | cut -d'"' -f4)
-    
+    local buyer_btc_address seller_btc_address
+    local buyer_btc_privkey seller_btc_privkey
+    local buyer_btc_pubkey seller_btc_pubkey
+
+    if buyer_btc_address=$(bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" getnewaddress "buyer" 2>/dev/null); then
+        # For descriptor wallets, use getaddressinfo and listdescriptors
+        local addr_info
+        if addr_info=$(bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" getaddressinfo "$buyer_btc_address" 2>/dev/null); then
+            buyer_btc_pubkey=$(echo "$addr_info" | jq -r .pubkey)
+            # Get private key from wallet dump for descriptor wallets
+            buyer_btc_privkey=$(bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" -rpcwallet=testwallet dumpprivkey "$buyer_btc_address" 2>/dev/null || \
+                            bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" listdescriptors true | jq -r --arg addr "$buyer_btc_address" '.descriptors[] | select(.desc | contains($addr)) | .desc' | grep -o '\[.*\]' | tr -d '[]')
+        else
+            error "Failed to get buyer address info"
+        fi
+    else
+        error "Failed to generate buyer Bitcoin address"
+    fi
+
     # Seller Bitcoin account  
-    local seller_btc_address=$(bitcoin-cli -regtest getnewaddress "seller")
-    local seller_btc_privkey=$(bitcoin-cli -regtest dumpprivkey "$seller_btc_address")
-    local seller_btc_pubkey=$(bitcoin-cli -regtest getaddressinfo "$seller_btc_address" | grep -o '"pubkey":"[^"]*"' | cut -d'"' -f4)
+    if seller_btc_address=$(bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" getnewaddress "seller" 2>/dev/null); then
+        local addr_info
+        if addr_info=$(bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" getaddressinfo "$seller_btc_address" 2>/dev/null); then
+            seller_btc_pubkey=$(echo "$addr_info" | jq -r .pubkey)
+            seller_btc_privkey=$(bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" -rpcwallet=testwallet dumpprivkey "$seller_btc_address" 2>/dev/null || \
+                                bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" listdescriptors true | jq -r --arg addr "$seller_btc_address" '.descriptors[] | select(.desc | contains($addr)) | .desc' | grep -o '\[.*\]' | tr -d '[]')
+        else
+            error "Failed to get seller address info"
+        fi
+    else
+        error "Failed to generate seller Bitcoin address"
+    fi
     
     # Fund buyer with Bitcoin
     log "Funding buyer Bitcoin address..."
-    bitcoin-cli -regtest generatetoaddress 5 "$buyer_btc_address" > /dev/null
-    bitcoin-cli -regtest generatetoaddress 1 $(bitcoin-cli -regtest getnewaddress) > /dev/null # Confirm the funding
+    bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" generatetoaddress 5 "$buyer_btc_address" > /dev/null
+    bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" generatetoaddress 1 "$(bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" getnewaddress)" > /dev/null # Confirm the funding
     
     # Ethereum accounts (using Hardhat's default funded accounts)
     local buyer_eth_privkey="0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
@@ -265,8 +390,11 @@ generate_test_accounts() {
     local seller_eth_privkey="0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
     local seller_eth_address="0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
     
-    # Get contract address
-    local contract_address=$(cat "$SETUP_DIR/agent/eth/contract_address.txt")
+    # Get contract address with error handling
+    local contract_address="N/A"
+    if [ -f "$SETUP_DIR/agent/eth/contract_address.txt" ]; then
+        contract_address=$(cat "$SETUP_DIR/agent/eth/contract_address.txt")
+    fi
     
     # Create demo configuration file
     log "Creating demo configuration..."
@@ -281,6 +409,7 @@ export BTC_RPC_URL="http://localhost:18443"
 export BTC_RPC_USER="user"
 export BTC_RPC_PASSWORD="password"
 export BTC_NETWORK="regtest"
+export BTC_DATA_DIR="$BITCOIN_DATA_DIR"
 
 # Ethereum Configuration  
 export ETH_RPC_URL="http://localhost:8545"
@@ -289,6 +418,7 @@ export NFT_CONTRACT_ADDRESS="$contract_address"
 # Buyer Keys
 export BUYER_BTC_PRIVKEY="$buyer_btc_privkey"
 export BUYER_BTC_ADDRESS="$buyer_btc_address"
+export BUYER_BTC_PUBKEY="$buyer_btc_pubkey"
 export BUYER_ETH_PRIVKEY="$buyer_eth_privkey"
 export BUYER_ETH_ADDRESS="$buyer_eth_address"
 
@@ -309,6 +439,11 @@ export HTLC_TIMEOUT="144"  # blocks
 # Helper function to run demo
 run_demo() {
     echo "Starting Cross-Chain Atomic Swap Demo..."
+    if [ ! -d "$SETUP_DIR/client" ]; then
+        echo "Client directory not found at $SETUP_DIR/client"
+        return 1
+    fi
+    
     cd "$SETUP_DIR/client"
     
     RUST_LOG=info cargo run --release -- atomic-swap \\
@@ -336,6 +471,11 @@ seller_commit() {
         return 1
     fi
     
+    if [ ! -d "$SETUP_DIR/client" ]; then
+        echo "Client directory not found at $SETUP_DIR/client"
+        return 1
+    fi
+    
     cd "$SETUP_DIR/client"
     
     RUST_LOG=info cargo run --release -- commit-for-mint \\
@@ -359,6 +499,11 @@ seller_claim_btc() {
         return 1
     fi
     
+    if [ ! -d "$SETUP_DIR/client" ]; then
+        echo "Client directory not found at $SETUP_DIR/client"
+        return 1
+    fi
+    
     cd "$SETUP_DIR/client"
     
     RUST_LOG=info cargo run --release -- claim-btc \\
@@ -371,9 +516,41 @@ seller_claim_btc() {
         --timeout "\$HTLC_TIMEOUT"
 }
 
+# Helper function to stop all services
+stop_services() {
+    echo "Stopping all demo services..."
+    
+    # Stop Bitcoin
+    if bitcoin-cli -regtest -datadir="\$BTC_DATA_DIR" stop 2>/dev/null; then
+        echo "Bitcoin stopped"
+    else
+        echo "Bitcoin was not running or failed to stop gracefully"
+        # Force kill if needed
+        pkill -f "bitcoind.*regtest" 2>/dev/null || true
+    fi
+    
+    # Stop Hardhat
+    if [ -f "$SETUP_DIR/agent/eth/hardhat.pid" ]; then
+        local hardhat_pid=\$(cat "$SETUP_DIR/agent/eth/hardhat.pid")
+        if ps -p "\$hardhat_pid" > /dev/null 2>&1; then
+            kill "\$hardhat_pid" && echo "Hardhat stopped"
+        fi
+        rm -f "$SETUP_DIR/agent/eth/hardhat.pid"
+    fi
+    
+    echo "All services stopped"
+}
+
 echo "Demo configuration loaded!"
-echo "Run 'run_demo' to start the atomic swap"
-echo "Or source this file and use the individual helper functions"
+echo "Available commands:"
+echo "  run_demo           - Run the full automated atomic swap demo"
+echo "  seller_commit      - Seller commits to mint (requires secret hash)"
+echo "  seller_claim_btc   - Seller claims Bitcoin (requires secret, hash, txid)"
+echo "  stop_services      - Stop all running services"
+echo ""
+echo "Bitcoin RPC: \$BTC_RPC_URL"
+echo "Ethereum RPC: \$ETH_RPC_URL"
+echo "NFT Contract: \$NFT_CONTRACT_ADDRESS"
 EOF
     
     chmod +x "$SETUP_DIR/demo_config.sh"
@@ -385,28 +562,38 @@ verify_setup() {
     log "Verifying setup..."
     
     # Check Bitcoin
-    local btc_info=$(bitcoin-cli -regtest getblockchaininfo)
-    local block_count=$(echo "$btc_info" | grep -o '"blocks":[0-9]*' | cut -d':' -f2)
-    log "Bitcoin: $block_count blocks in regtest chain"
-    
-    # Check Ethereum
-    local eth_response=$(curl -s -X POST -H 'Content-Type: application/json' \
-        --data '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' \
-        http://localhost:8545)
-    log "Ethereum: Hardhat node responding"
-    
-    # Check contract
-    local contract_address=$(cat "$SETUP_DIR/agent/eth/contract_address.txt")
-    log "NFT Contract: $contract_address deployed"
-    
-    # Check client build
-    if [ -f "$SETUP_DIR/client/target/release/crosschain-secret-mint" ] || [ -f "$SETUP_DIR/client/target/release/client" ]; then
-        log "Rust client: Built successfully"
+    if btc_info=$(bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" getblockchaininfo 2>/dev/null); then
+        local block_count=$(echo "$btc_info" | jq -r .blocks)
+        log "Bitcoin: $block_count blocks in regtest chain"
     else
-        warn "Rust client binary not found, but build completed"
+        warn "Bitcoin verification failed"
     fi
     
-    success "All components verified!"
+    # Check Ethereum
+    if curl -s -X POST -H 'Content-Type: application/json' \
+        --data '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' \
+        http://localhost:8545 &>/dev/null; then
+        log "Ethereum: Hardhat node responding"
+    else
+        warn "Ethereum node not responding"
+    fi
+    
+    # Check contract
+    if [ -f "$SETUP_DIR/agent/eth/contract_address.txt" ]; then
+        local contract_address=$(cat "$SETUP_DIR/agent/eth/contract_address.txt")
+        log "NFT Contract: $contract_address deployed"
+    else
+        warn "Contract address file not found"
+    fi
+    
+    # Check client build
+    if [ -f "$SETUP_DIR/target/release/crosschain-secret-mint" ] || [ -f "$SETUP_DIR/target/release/client" ]; then
+        log "Rust client: Built successfully"
+    else
+        warn "Rust client binary not found, but build may have completed"
+    fi
+    
+    success "Setup verification completed!"
 }
 
 print_usage_instructions() {
@@ -431,16 +618,22 @@ print_usage_instructions() {
     echo
     echo -e "${BLUE}Configuration saved to:${NC} demo_config.sh"
     echo -e "${BLUE}Setup log saved to:${NC} setup.log"
+    echo -e "${BLUE}Bitcoin data directory:${NC} $BITCOIN_DATA_DIR"
     echo
     echo -e "${YELLOW}Services running:${NC}"
     echo "  • Bitcoin regtest: http://localhost:18443"
     echo "  • Ethereum (Hardhat): http://localhost:8545"
-    echo "  • NFT Contract: $(cat "$SETUP_DIR/agent/eth/contract_address.txt" 2>/dev/null || echo 'N/A')"
+    if [ -f "$SETUP_DIR/agent/eth/contract_address.txt" ]; then
+        echo "  • NFT Contract: $(cat "$SETUP_DIR/agent/eth/contract_address.txt")"
+    fi
     echo
     echo -e "${YELLOW}To stop services:${NC}"
-    echo "  bitcoin-cli -regtest stop"
+    echo "  stop_services  # (after sourcing demo_config.sh)"
+    echo "  # Or manually:"
+    echo "  bitcoin-cli -regtest -datadir=\"$BITCOIN_DATA_DIR\" stop"
     echo "  kill \$(cat agent/eth/hardhat.pid 2>/dev/null) 2>/dev/null || true"
     echo
+    echo -e "${YELLOW}Note:${NC} Bitcoin data is stored in project directory: $BITCOIN_DATA_DIR"
 }
 
 cleanup() {

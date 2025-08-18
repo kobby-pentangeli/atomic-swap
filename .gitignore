@@ -20,5 +20,7 @@ typechain-types/
 # OS
 .DS_Store
 
-# Bitcoin data dir
+# Demo output
 .bitcoin
+setup.log
+demo_config.sh
