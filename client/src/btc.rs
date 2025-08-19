@@ -1,4 +1,5 @@
 use anyhow::Context;
+use bitcoin::address::NetworkChecked;
 use bitcoin::key::Keypair;
 use bitcoin::{
     Address, Amount, Network, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid,
@@ -11,6 +12,7 @@ use tracing::{debug, error, info, warn};
 use crate::types::{BitcoinTx, UtxoInfo};
 
 mod signer;
+pub mod utils;
 
 use signer::BtcTxSigner;
 
@@ -18,6 +20,7 @@ pub struct BtcClient {
     rpc: RpcClient,
     network: Network,
     signer: BtcTxSigner,
+    own_address: Address,
 }
 
 impl BtcClient {
@@ -35,10 +38,17 @@ impl BtcClient {
             .context("Failed to connect to Bitcoin node")?;
         info!("Connected to Bitcoin {network}");
 
+        let signer = BtcTxSigner::new(keypair);
+        let pubkey = signer.get_public_key()?;
+        let own_address = Address::p2wpkh(&pubkey, network);
+
+        debug!("Own address: {own_address}");
+
         Ok(Self {
             rpc,
             network,
-            signer: BtcTxSigner::new(keypair),
+            signer,
+            own_address,
         })
     }
 
@@ -46,11 +56,11 @@ impl BtcClient {
         let address = contract.address();
         info!("Funding contract at {address} with {} BTC", amt.to_btc());
 
-        let utxos = self.get_spendable_utxos(amt + Amount::from_sat(10000))?; // +fee buffer
+        let utxos =
+            self.get_spendable_utxos(amt + Amount::from_sat(10000), &[&self.own_address])?; // +fee buffer
         if utxos.is_empty() {
             return Err(anyhow::anyhow!("Insufficient funds"));
         }
-
         let total_input = utxos.iter().map(|utxo| utxo.tx_out.value).sum::<Amount>();
 
         let inputs = utxos
@@ -61,13 +71,12 @@ impl BtcClient {
                     vout: utxo.outpoint.vout,
                 },
                 script_sig: ScriptBuf::new(),
-                sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+                sequence: Sequence::MAX,
                 witness: Witness::new(),
             })
             .collect::<Vec<TxIn>>();
 
-        // TODO (kobby-pentangeli): Robust fee estimation
-        let fee = self.estimate_fee(inputs.len(), 2)?;
+        let fee = self.estimate_fee_for_htlc_funding(inputs.len(), 2)?;
         let change_amt = total_input - amt - fee;
 
         let mut outputs = vec![TxOut {
@@ -90,15 +99,16 @@ impl BtcClient {
             input: inputs,
             output: outputs,
         };
-
-        self.signer.sign_transaction(&tx, &utxos)?;
-
+        let signed_tx = self.signer.sign_transaction(&tx, &utxos)?;
         let txid = self
             .rpc
-            .send_raw_transaction(&tx)
+            .send_raw_transaction(&signed_tx)
             .context("Failed to broadcast transaction")?;
         info!("Contract funded successfully: {txid}");
-        debug!("Transaction: {}", consensus::encode::serialize_hex(&tx));
+        debug!(
+            "Transaction: {}",
+            consensus::encode::serialize_hex(&signed_tx)
+        );
 
         Ok(txid)
     }
@@ -126,8 +136,7 @@ impl BtcClient {
             .get(vout as usize)
             .context("Lock tx output not found")?;
 
-        let expected_script = contract.address().script_pubkey();
-        if output.script_pubkey != expected_script {
+        if output.script_pubkey != contract.address().script_pubkey() {
             return Err(anyhow::anyhow!("Lock transaction output script mismatch"));
         }
 
@@ -139,12 +148,11 @@ impl BtcClient {
             }
         };
 
-        let fee = self.estimate_fee(1, 1)?;
+        let fee = self.estimate_fee_for_htlc_claim()?;
         if output.value <= fee {
             return Err(anyhow::anyhow!("amount insufficient to cover fee"));
         }
         let amt = output.value - fee;
-
         if amt <= Amount::from_sat(546) {
             return Err(anyhow::anyhow!("amount too small after fee"));
         }
@@ -155,7 +163,7 @@ impl BtcClient {
             input: vec![TxIn {
                 previous_output: OutPoint { txid, vout },
                 script_sig: ScriptBuf::new(),
-                sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+                sequence: Sequence::MAX,
                 witness: Witness::new(),
             }],
             output: vec![TxOut {
@@ -168,11 +176,9 @@ impl BtcClient {
             outpoint: OutPoint { txid, vout },
             tx_out: output.clone(),
         };
-
         let signed_tx = self
             .signer
             .sign_claim_transaction(&tx, &[utxo], contract, secret)?;
-
         let txid = self
             .rpc
             .send_raw_transaction(&signed_tx)
@@ -194,30 +200,27 @@ impl BtcClient {
     ) -> anyhow::Result<Txid> {
         info!("Reclaiming {txid}:{vout} after timeout");
 
-        let tx_info = self.get_transaction_info(&txid)?;
         let current_height = self.rpc.get_block_count()?;
-
-        if let Some(conf_height) = tx_info.block_height() {
-            let blocks_passed = current_height.saturating_sub(conf_height);
-            if blocks_passed < contract.timeout as u64 {
-                return Err(anyhow::anyhow!(
-                    "timeout not reached. {} blocks remaining",
-                    contract.timeout as u64 - blocks_passed
-                ));
-            }
-        } else {
-            return Err(anyhow::anyhow!("transaction not confirmed"));
+        if current_height < contract.timeout as u64 {
+            return Err(anyhow::anyhow!(
+                "timeout not reached. current height: {} timeout height: {}",
+                current_height,
+                contract.timeout
+            ));
         }
 
         let tx = self
             .rpc
             .get_raw_transaction(&txid, None)
             .context("Failed to get transaction")?;
-
         let output = tx
             .output
             .get(vout as usize)
             .context("HTLC output not found")?;
+
+        if output.script_pubkey != contract.address().script_pubkey() {
+            return Err(anyhow::anyhow!("Output script mismatch"));
+        }
 
         let dest_address = match destination {
             Some(addr) => addr,
@@ -227,7 +230,7 @@ impl BtcClient {
             }
         };
 
-        let fee = self.estimate_fee(1, 1)?;
+        let fee = self.estimate_fee_for_htlc_timeout()?;
         if output.value <= fee {
             return Err(anyhow::anyhow!("amount insufficient to cover fee"));
         }
@@ -239,11 +242,12 @@ impl BtcClient {
 
         let tx = Transaction {
             version: transaction::Version::TWO,
-            lock_time: absolute::LockTime::ZERO,
+            lock_time: absolute::LockTime::from_height(contract.timeout)
+                .context("Invalid timeout height")?,
             input: vec![TxIn {
                 previous_output: OutPoint { txid, vout },
                 script_sig: ScriptBuf::new(),
-                sequence: Sequence::from_height(contract.timeout),
+                sequence: Sequence::from_height(0),
                 witness: Witness::new(),
             }],
             output: vec![TxOut {
@@ -256,7 +260,6 @@ impl BtcClient {
             outpoint: OutPoint { txid, vout },
             tx_out: output.clone(),
         };
-
         let signed_tx = self
             .signer
             .sign_timeout_transaction(&tx, &[utxo], contract)?;
@@ -284,23 +287,6 @@ impl BtcClient {
             block_hash: tx_info.blockhash,
             block_time: tx_info.blocktime,
         })
-    }
-
-    /// Check if HTLC has timed out
-    pub fn is_htlc_expired(
-        &self,
-        contract: &BtcContract,
-        htlc_txid: &Txid,
-    ) -> anyhow::Result<bool> {
-        let tx_info = self.get_transaction_info(htlc_txid)?;
-        let current_height = self.rpc.get_block_count()?;
-
-        if let Some(conf_height) = tx_info.block_height() {
-            let blocks_passed = current_height.saturating_sub(conf_height);
-            Ok(blocks_passed >= contract.timeout as u64)
-        } else {
-            Ok(false) // Not confirmed yet
-        }
     }
 
     /// Monitor for new blocks
@@ -351,11 +337,18 @@ impl BtcClient {
     }
 
     /// Get spendable UTXOs with at least the specified amount
-    fn get_spendable_utxos(&self, min_amount: Amount) -> anyhow::Result<Vec<UtxoInfo>> {
+    fn get_spendable_utxos(
+        &self,
+        min_amount: Amount,
+        addresses: &[&Address<NetworkChecked>],
+    ) -> anyhow::Result<Vec<UtxoInfo>> {
         let unspent = self
             .rpc
-            .list_unspent(None, None, None, None, None)
+            .list_unspent(None, None, Some(addresses), None, None)
             .context("Failed to list unspent outputs")?;
+
+        let targets: std::collections::HashSet<ScriptBuf> =
+            addresses.iter().map(|addr| addr.script_pubkey()).collect();
 
         let mut utxos = Vec::new();
         let mut total = Amount::ZERO;
@@ -365,7 +358,7 @@ impl BtcClient {
         sorted_unspent.sort_by(|a, b| b.amount.cmp(&a.amount));
 
         for utxo in sorted_unspent {
-            if utxo.spendable {
+            if utxo.spendable && targets.contains(&utxo.script_pub_key) {
                 utxos.push(UtxoInfo {
                     outpoint: OutPoint {
                         txid: utxo.txid,
@@ -392,19 +385,38 @@ impl BtcClient {
             ));
         }
 
+        info!(
+            "Selected {} UTXOs totaling {} BTC",
+            utxos.len(),
+            total.to_btc()
+        );
         Ok(utxos)
     }
-
-    /// Estimate transaction fee
-    fn estimate_fee(&self, inputs: usize, outputs: usize) -> anyhow::Result<Amount> {
+    fn estimate_fee_for_htlc_funding(
+        &self,
+        inputs: usize,
+        outputs: usize,
+    ) -> anyhow::Result<Amount> {
         let fee_rate = self.get_fee_rate()?;
-
-        // TODO (kobby-pentangeli): robust tx size estimation
-        // Estimate transaction size (simplified)
-        // P2WPKH input: ~68 vbytes, P2WPKH output: ~31 vbytes, overhead: ~11 vbytes
-        let estimated_vbytes = 11 + (inputs * 68) + (outputs * 31);
+        // Standard P2WPKH inputs, P2WSH output
+        let estimated_vbytes = 11 + (inputs * 68) + (outputs * 43); // P2WSH output is larger
         let fee_sats = (estimated_vbytes as f64 * fee_rate).ceil() as u64;
+        Ok(Amount::from_sat(fee_sats))
+    }
 
+    fn estimate_fee_for_htlc_claim(&self) -> anyhow::Result<Amount> {
+        let fee_rate = self.get_fee_rate()?;
+        // P2WSH input with HTLC script (reveal path) + P2WPKH output
+        let estimated_vbytes = 11 + 150 + 31; // HTLC claim is larger due to script + secret
+        let fee_sats = (estimated_vbytes as f64 * fee_rate).ceil() as u64;
+        Ok(Amount::from_sat(fee_sats))
+    }
+
+    fn estimate_fee_for_htlc_timeout(&self) -> anyhow::Result<Amount> {
+        let fee_rate = self.get_fee_rate()?;
+        // P2WSH input with HTLC script (timeout path) + P2WPKH output
+        let estimated_vbytes = 11 + 120 + 31; // HTLC timeout is smaller than claim
+        let fee_sats = (estimated_vbytes as f64 * fee_rate).ceil() as u64;
         Ok(Amount::from_sat(fee_sats))
     }
 

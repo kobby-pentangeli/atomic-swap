@@ -42,7 +42,7 @@ pub struct SwapConfig {
     pub nft_price: u64,
     pub token_id: u64,
     pub metadata_uri: String,
-    pub timeout: u16,
+    pub timeout: u32,
     pub buyer: Option<EthAddress>,
 }
 
@@ -142,7 +142,7 @@ pub struct AtomicSwapConfig {
     pub nft_price: u64,
     pub token_id: u64,
     pub metadata_uri: String,
-    pub timeout: u16,
+    pub timeout: u32,
 }
 
 pub struct CommitForMintConfig {
@@ -167,7 +167,7 @@ pub struct ClaimBtcConfig {
     pub secret_hash: [u8; 32],
     pub lock_txid: bitcoin::Txid,
     pub lock_vout: u32,
-    pub timeout: u16,
+    pub timeout: u32,
     pub destination: Option<BtcAddress>,
 }
 

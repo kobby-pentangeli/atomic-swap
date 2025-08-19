@@ -74,7 +74,7 @@ impl EthClient {
     /// Create a commitment for NFT minting
     pub async fn commit_for_mint(
         &self,
-        secret_hash: [u8; 32],
+        secret_hash: H256,
         token_id: U256,
         price: U256,
         buyer: Option<Address>,
@@ -111,7 +111,7 @@ impl EthClient {
     }
 
     /// Mint NFT by revealing the secret
-    pub async fn mint_with_secret(&self, secret: [u8; 32], token_id: U256) -> anyhow::Result<H256> {
+    pub async fn mint_with_secret(&self, secret: H256, token_id: U256) -> anyhow::Result<H256> {
         let commit = self.get_commitment(token_id).await?;
         if !commit.is_active {
             return Err(anyhow::anyhow!("No active commitment for this token"));
@@ -320,7 +320,7 @@ impl EthClient {
     }
 
     /// Check if a secret hash has already been used
-    async fn is_hash_used(&self, secret_hash: [u8; 32]) -> anyhow::Result<bool> {
+    async fn is_hash_used(&self, secret_hash: H256) -> anyhow::Result<bool> {
         // Query the hashToTokenId mapping
         let token_id: U256 = self
             .contract
