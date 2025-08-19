@@ -56,8 +56,7 @@ impl BtcClient {
         let address = contract.address();
         info!("Funding contract at {address} with {} BTC", amt.to_btc());
 
-        let utxos =
-            self.get_spendable_utxos(amt + Amount::from_sat(10000), &[&self.own_address])?; // +fee buffer
+        let utxos = self.get_spendable_utxos(amt + Amount::from_sat(1000), &[&self.own_address])?; // +fee buffer
         if utxos.is_empty() {
             return Err(anyhow::anyhow!("Insufficient funds"));
         }
@@ -105,7 +104,7 @@ impl BtcClient {
             .send_raw_transaction(&signed_tx)
             .context("Failed to broadcast transaction")?;
         info!("Contract funded successfully: {txid}");
-        debug!(
+        info!(
             "Transaction: {}",
             consensus::encode::serialize_hex(&signed_tx)
         );

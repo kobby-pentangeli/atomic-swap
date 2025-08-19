@@ -6,7 +6,9 @@ pub mod eth;
 pub mod execute;
 pub mod types;
 
-use types::{AtomicSwapConfig, ClaimBtcConfig, CommitForMintConfig, MonitorConfig};
+use types::{ClaimBtcConfig, CommitForMintConfig, LockBtcConfig, MonitorEventsConfig};
+
+use crate::types::MintWithSecretConfig;
 
 #[derive(Parser)]
 #[command(name = "crosschain-secret-mint")]
@@ -18,8 +20,8 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Run the complete swap flow
-    AtomicSwap {
+    /// Buyer locks Bitcoin
+    LockBtc {
         /// Bitcoin RPC URL
         #[arg(long, default_value = "http://localhost:18443")]
         btc_rpc: String,
@@ -32,38 +34,20 @@ pub enum Commands {
         /// Bitcoin network
         #[arg(long, default_value = "regtest")]
         btc_network: String,
-        /// Buyer's Bitcoin private key (WIF format)
+        /// Buyer's Bitcoin private key
         #[arg(long)]
         buyer_btc_key: String,
-        /// Seller's Bitcoin public key (hex)
+        /// Seller's Bitcoin public key
         #[arg(long)]
         seller_btc_pubkey: String,
-        /// Ethereum RPC URL
-        #[arg(long, default_value = "http://localhost:8545")]
-        eth_rpc: String,
-        /// Buyer's Ethereum private key (hex)
-        #[arg(long)]
-        buyer_eth_key: String,
-        /// NFT contract address
-        #[arg(long)]
-        nft_contract: String,
         /// Amount of Bitcoin to lock (in satoshis)
         #[arg(long, default_value = "1000000")] // 0.01 BTC
         btc_amount: u64,
-        /// NFT price in wei
-        #[arg(long, default_value = "1000000000000000000")] // 1 ETH
-        nft_price: u64,
-        /// Token ID to mint
-        #[arg(long, default_value = "1")]
-        token_id: u64,
-        /// NFT metadata URI
-        #[arg(long, default_value = "https://example.com/nft/1.json")]
-        metadata_uri: String,
         /// HTLC timeout in blocks
         #[arg(long, default_value = "144")] // ~24 hours on Bitcoin
         timeout: u32,
     },
-    /// Seller workflow - commit NFT after seeing Bitcoin lock
+    /// Seller commits NFT after buyer locks Bitcoin
     CommitForMint {
         /// Ethereum RPC URL
         #[arg(long, default_value = "http://localhost:8545")]
@@ -90,7 +74,26 @@ pub enum Commands {
         #[arg(long)]
         metadata_uri: String,
     },
-    /// Claim Bitcoin using revealed secret
+    /// Buyer reveals shared secret to mint NFT after seller commitment
+    /// is confirmed
+    MintWithSecret {
+        /// Ethereum RPC URL
+        #[arg(long, default_value = "http://localhost:8545")]
+        eth_rpc: String,
+        /// Buyer's Ethereum private key (hex)
+        #[arg(long)]
+        buyer_eth_key: String,
+        /// NFT contract address
+        #[arg(long)]
+        nft_contract: String,
+        /// Shared secret
+        #[arg(long)]
+        secret: String,
+        /// Token ID to mint
+        #[arg(long, default_value = "1")]
+        token_id: u64,
+    },
+    /// Seller claims Bitcoin using revealed secret
     ClaimBtc {
         /// Bitcoin RPC URL
         #[arg(long, default_value = "http://localhost:18443")]
@@ -129,8 +132,8 @@ pub enum Commands {
         #[arg(long)]
         destination: Option<String>,
     },
-    /// Monitor events and state
-    Monitor {
+    /// Monitor events and swap state
+    MonitorEvents {
         /// Bitcoin RPC URL
         #[arg(long, default_value = "http://localhost:18443")]
         btc_rpc: String,
@@ -165,43 +168,28 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        // end-to-end demo run
-        Commands::AtomicSwap {
+        Commands::LockBtc {
             btc_rpc,
             btc_user,
             btc_pass,
             btc_network,
             buyer_btc_key,
             seller_btc_pubkey,
-            eth_rpc,
-            buyer_eth_key,
-            nft_contract,
             btc_amount,
-            nft_price,
-            token_id,
-            metadata_uri,
             timeout,
         } => {
-            let config = AtomicSwapConfig {
+            let config = LockBtcConfig {
                 btc_rpc,
                 btc_user,
                 btc_pass,
                 btc_network: btc::utils::parse_network(&btc_network)?,
                 buyer_btc_key,
                 seller_btc_pubkey,
-                eth_rpc,
-                buyer_eth_key,
-                nft_contract: nft_contract
-                    .parse()
-                    .context("Invalid NFT contract address")?,
                 btc_amount,
-                nft_price,
-                token_id,
-                metadata_uri,
                 timeout,
             };
 
-            execute::atomic_swap(config).await
+            execute::lock_bitcoin(config).await
         }
         Commands::CommitForMint {
             eth_rpc,
@@ -230,6 +218,25 @@ async fn main() -> Result<()> {
             };
 
             execute::commit_for_mint(config).await
+        }
+        Commands::MintWithSecret {
+            eth_rpc,
+            buyer_eth_key,
+            nft_contract,
+            secret,
+            token_id,
+        } => {
+            let config = MintWithSecretConfig {
+                eth_rpc,
+                buyer_eth_key,
+                nft_contract: nft_contract
+                    .parse()
+                    .context("Invalid NFT contract address")?,
+                secret: decode_hex_secret(&secret)?,
+                token_id,
+            };
+
+            execute::mint_with_secret(config).await
         }
         Commands::ClaimBtc {
             btc_rpc,
@@ -265,7 +272,7 @@ async fn main() -> Result<()> {
 
             execute::claim_bitcoin(config).await
         }
-        Commands::Monitor {
+        Commands::MonitorEvents {
             btc_rpc,
             btc_user,
             btc_pass,
@@ -274,7 +281,7 @@ async fn main() -> Result<()> {
             eth_key,
             nft_contract,
         } => {
-            let config = MonitorConfig {
+            let config = MonitorEventsConfig {
                 btc_rpc,
                 btc_user,
                 btc_pass,
@@ -286,7 +293,7 @@ async fn main() -> Result<()> {
                     .context("Invalid NFT contract address")?,
             };
 
-            execute::monitor(config).await
+            execute::monitor_events(config).await
         }
     }
 }

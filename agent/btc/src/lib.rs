@@ -204,8 +204,30 @@ pub fn generate_random_secret() -> [u8; 32] {
     secret
 }
 
+/// Generate a cryptographically secure random secret as hex string
+pub fn generate_random_secret_hex() -> String {
+    hex::encode(generate_random_secret())
+}
+
 pub fn generate_secret_from_preimage(p: &[u8]) -> [u8; 32] {
     Sha256::digest(p).into()
+}
+
+/// Convert hex string to 32-byte array
+pub fn hex_to_secret(hex_str: &str) -> anyhow::Result<[u8; 32]> {
+    let hex_str = hex_str.strip_prefix("0x").unwrap_or(hex_str);
+
+    let bytes = hex::decode(hex_str).map_err(|e| anyhow::anyhow!("Invalid hex string: {e}"))?;
+    if bytes.len() != 32 {
+        return Err(anyhow::anyhow!(
+            "Secret must be exactly 32 bytes (64 hex characters), got {} bytes",
+            bytes.len()
+        ));
+    }
+
+    let mut secret = [0u8; 32];
+    secret.copy_from_slice(&bytes);
+    Ok(secret)
 }
 
 #[cfg(test)]
@@ -220,6 +242,28 @@ mod tests {
         let private_key = PrivateKey::generate(Network::Regtest);
         let public_key = private_key.public_key(&secp);
         (private_key, public_key)
+    }
+
+    #[test]
+    fn test_hex_secret_conversion() {
+        let original_secret = generate_random_secret();
+        let hex_secret = hex::encode(original_secret);
+        let parsed_secret = hex_to_secret(&hex_secret).unwrap();
+
+        assert_eq!(original_secret, parsed_secret);
+    }
+
+    #[test]
+    fn test_hex_with_prefix() {
+        let hex_secret = "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let secret = hex_to_secret(hex_secret).unwrap();
+        assert_eq!(secret.len(), 32);
+    }
+
+    #[test]
+    fn test_invalid_length() {
+        let short_hex = "0123456789abcdef"; // Only 16 hex chars = 8 bytes
+        assert!(hex_to_secret(short_hex).is_err());
     }
 
     #[test]

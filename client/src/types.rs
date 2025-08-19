@@ -2,50 +2,6 @@ use bitcoin::{Address as BtcAddress, Network};
 use ethers::core::types::{Address as EthAddress, H256, U64, U256};
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct SwapState {
-    pub swap_id: String,
-    pub secret_hash: [u8; 32],
-    pub btc_locked: bool,
-    pub btc_txid: Option<String>,
-    pub eth_committed: bool,
-    pub eth_commit_tx: Option<String>,
-    pub nft_minted: bool,
-    pub nft_mint_tx: Option<String>,
-    pub btc_claimed: bool,
-    pub btc_claim_tx: Option<String>,
-    pub revealed_secret: Option<[u8; 32]>,
-    pub status: SwapStatus,
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    pub updated_at: chrono::DateTime<chrono::Utc>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-pub enum SwapStatus {
-    Created,
-    /// Step 1: Bitcoin locked by buyer
-    BtcLocked,
-    /// Step 2: NFT committed by seller
-    EthCommitted,
-    /// Step 3: NFT minted by buyer (secret revealed)
-    NFTMinted,
-    /// Step 4: Bitcoin claimed by seller
-    BtcClaimed,
-    Expired,
-    Failed(String),
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SwapConfig {
-    pub btc_network: bitcoin::Network,
-    pub btc_amount: u64,
-    pub nft_price: u64,
-    pub token_id: u64,
-    pub metadata_uri: String,
-    pub timeout: u32,
-    pub buyer: Option<EthAddress>,
-}
-
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub enum SwapEvent {
     BtcLocked {
@@ -87,18 +43,6 @@ pub struct BitcoinTx {
     pub block_time: Option<usize>,
 }
 
-impl BitcoinTx {
-    pub fn block_height(&self) -> Option<u64> {
-        if self.confirmations > 0 {
-            // TODO (kobby-pentangeli): This would need the current height to be accurate
-            // For now, we return a placeholder that indicates confirmation
-            Some(800_000) // Placeholder mainnet height
-        } else {
-            None
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct UtxoInfo {
     /// ID of the output.
@@ -128,20 +72,14 @@ pub struct CommitmentInfo {
     pub token_uri: String,
 }
 
-pub struct AtomicSwapConfig {
+pub struct LockBtcConfig {
     pub btc_rpc: String,
     pub btc_user: String,
     pub btc_pass: String,
     pub btc_network: Network,
     pub buyer_btc_key: String,
     pub seller_btc_pubkey: String,
-    pub eth_rpc: String,
-    pub buyer_eth_key: String,
-    pub nft_contract: EthAddress,
     pub btc_amount: u64,
-    pub nft_price: u64,
-    pub token_id: u64,
-    pub metadata_uri: String,
     pub timeout: u32,
 }
 
@@ -154,6 +92,14 @@ pub struct CommitForMintConfig {
     pub nft_price: u64,
     pub buyer_address: Option<EthAddress>,
     pub metadata_uri: String,
+}
+
+pub struct MintWithSecretConfig {
+    pub eth_rpc: String,
+    pub buyer_eth_key: String,
+    pub nft_contract: EthAddress,
+    pub secret: [u8; 32],
+    pub token_id: u64,
 }
 
 pub struct ClaimBtcConfig {
@@ -171,7 +117,7 @@ pub struct ClaimBtcConfig {
     pub destination: Option<BtcAddress>,
 }
 
-pub struct MonitorConfig {
+pub struct MonitorEventsConfig {
     pub btc_rpc: String,
     pub btc_user: String,
     pub btc_pass: String,

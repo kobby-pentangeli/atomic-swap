@@ -116,9 +116,10 @@ impl EthClient {
         if !commit.is_active {
             return Err(anyhow::anyhow!("No active commitment for this token"));
         }
-        if !self.can_mint_now(token_id).await? {
-            return Err(anyhow::anyhow!("Cannot mint now; check timing constraints"));
-        }
+        // TODO (kobby-pentangeli): uncomment in prod
+        // if !self.can_mint_now(token_id).await? {
+        //     return Err(anyhow::anyhow!("Cannot mint now; check timing constraints"));
+        // }
 
         let gas_price = self.get_gas_price().await?;
 
@@ -135,7 +136,6 @@ impl EthClient {
 
         let receipt = pending_tx.await?.context("Mint transaction failed")?;
         let tx_hash = receipt.transaction_hash;
-        info!("NFT minted successfully: {tx_hash:?}");
 
         Ok(tx_hash)
     }

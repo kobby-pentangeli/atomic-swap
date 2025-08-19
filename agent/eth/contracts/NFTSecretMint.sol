@@ -47,7 +47,7 @@ contract NFTSecretMint is
     uint256 public constant COMMITMENT_TIMEOUT = 24 hours;
 
     /// @dev Minimum commitment time before reveal (prevents MEV)
-    uint256 public constant MIN_COMMITMENT_TIME = 1 hours;
+    uint256 public constant MIN_COMMITMENT_TIME = 5 seconds;
 
     /// @dev Events
     event CommitmentCreated(
@@ -288,8 +288,8 @@ contract NFTSecretMint is
             newTimeout >= 1 hours && newTimeout <= 7 days,
             "Invalid timeout"
         );
-        // Note: This would require making COMMITMENT_TIMEOUT non-constant
-        // Left as an exercise for production deployment considerations
+        // TODO (kobby-pentangeli): Reconsider
+        // Because this would require making COMMITMENT_TIMEOUT non-constant
     }
 
     /**

@@ -468,7 +468,7 @@ generate_test_accounts() {
     fi
     
     log "Creating demo configuration..."
-    cat > "$SETUP_DIR/demo_config.sh" << EOF
+    cat > "$SETUP_DIR/atomic_swap.sh" << EOF
 #!/bin/bash
 
 # Cross-Chain Secret Mint Demo Configuration
@@ -500,55 +500,39 @@ export SELLER_ETH_PRIVKEY="$seller_eth_privkey"
 export SELLER_ETH_ADDRESS="$seller_eth_address"
 
 # Demo Parameters
-export BTC_AMOUNT="1000000"  # 0.01 BTC in satoshis
+export BTC_AMOUNT="100000"  # 0.001 BTC in satoshis
 export NFT_PRICE="1000000000000000000"  # 1 ETH in wei
 export TOKEN_ID="1"
 export METADATA_URI="https://example.com/nft/1.json"
 export HTLC_TIMEOUT="144"  # blocks
 
-# Helper function to run demo
-run_demo() {
-    echo "Starting Cross-Chain Atomic Swap Demo..."
-    if [ ! -d "$SETUP_DIR/client" ]; then
-        echo "Client directory not found at $SETUP_DIR/client"
-        return 1
-    fi
+# Step 1: Lock bitcoin
+lock_btc() {
+    echo "Starting Cross-Chain Atomic Swap..."
+    echo "Generating initial blocks and funding the buyer address..."
+
+    bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" generatetoaddress 101 "$buyer_btc_address"
     
-    cd "$SETUP_DIR/client"
-    
-    RUST_LOG=info cargo run --release -- atomic-swap \\
+    RUST_LOG=info ./target/release/client lock-btc \\
         --btc-rpc "\$BTC_RPC_URL" \\
         --btc-user "\$BTC_RPC_USER" \\
         --btc-pass "\$BTC_RPC_PASSWORD" \\
         --btc-network "\$BTC_NETWORK" \\
         --buyer-btc-key "\$BUYER_BTC_PRIVKEY" \\
         --seller-btc-pubkey "\$SELLER_BTC_PUBKEY" \\
-        --eth-rpc "\$ETH_RPC_URL" \\
-        --buyer-eth-key "\$BUYER_ETH_PRIVKEY" \\
-        --nft-contract "\$NFT_CONTRACT_ADDRESS" \\
         --btc-amount "\$BTC_AMOUNT" \\
-        --nft-price "\$NFT_PRICE" \\
-        --token-id "\$TOKEN_ID" \\
-        --metadata-uri "\$METADATA_URI" \\
         --timeout "\$HTLC_TIMEOUT"
 }
 
-# Helper function for seller commitment
-seller_commit() {
+# Commit NFT with shared secret
+commit_for_mint() {
     local secret_hash="\$1"
     if [ -z "\$secret_hash" ]; then
-        echo "Usage: seller_commit <SECRET_HASH>"
+        echo "Usage: commit_for_mint <SECRET_HASH>"
         return 1
     fi
     
-    if [ ! -d "$SETUP_DIR/client" ]; then
-        echo "Client directory not found at $SETUP_DIR/client"
-        return 1
-    fi
-    
-    cd "$SETUP_DIR/client"
-    
-    RUST_LOG=info cargo run --release -- commit-for-mint \\
+    RUST_LOG=info ./target/release/client commit-for-mint \\
         --seller-eth-key "\$SELLER_ETH_PRIVKEY" \\
         --nft-contract "\$NFT_CONTRACT_ADDRESS" \\
         --secret-hash "\$secret_hash" \\
@@ -558,25 +542,33 @@ seller_commit() {
         --metadata-uri "\$METADATA_URI"
 }
 
-# Helper function for Bitcoin claim
-seller_claim_btc() {
+# Mint the NFT with shared secret
+mint_with_secret() {
+    local secret="\$1"
+    if [ -z "\$secret" ]; then
+        echo "Usage: mint_with_secret <SECRET>"
+        return 1
+    fi
+    
+    RUST_LOG=info ./target/release/client mint-with-secret \\
+        --buyer-eth-key "\$BUYER_ETH_PRIVKEY" \\
+        --nft-contract "\$NFT_CONTRACT_ADDRESS" \\
+        --secret "\$secret" \\
+        --token-id "\$TOKEN_ID" \\
+}
+
+# Claim bitcoin after secret reveal
+claim_btc() {
     local secret="\$1"
     local secret_hash="\$2"
     local lock_txid="\$3"
     
     if [ -z "\$secret" ] || [ -z "\$secret_hash" ] || [ -z "\$lock_txid" ]; then
-        echo "Usage: seller_claim_btc <SECRET> <SECRET_HASH> <LOCK_TXID>"
+        echo "Usage: claim_btc <SECRET> <SECRET_HASH> <LOCK_TXID>"
         return 1
     fi
     
-    if [ ! -d "$SETUP_DIR/client" ]; then
-        echo "Client directory not found at $SETUP_DIR/client"
-        return 1
-    fi
-    
-    cd "$SETUP_DIR/client"
-    
-    RUST_LOG=info cargo run --release -- claim-btc \\
+    RUST_LOG=info ./target/release/client claim-btc \\
         --seller-btc-key "\$SELLER_BTC_PRIVKEY" \\
         --buyer-btc-pubkey "\$BUYER_BTC_PUBKEY" \\
         --secret "\$secret" \\
@@ -586,7 +578,7 @@ seller_claim_btc() {
         --timeout "\$HTLC_TIMEOUT"
 }
 
-# Helper function to stop all services
+# Graceful shutdown
 stop_services() {
     echo "Stopping all demo services..."
     
@@ -613,9 +605,10 @@ stop_services() {
 
 echo "Demo configuration loaded!"
 echo "Available commands:"
-echo "  run_demo           - Run the full automated atomic swap demo"
-echo "  seller_commit      - Seller commits to mint (requires secret hash)"
-echo "  seller_claim_btc   - Seller claims Bitcoin (requires secret, hash, txid)"
+echo "  lock_btc           - Lock up Bitcoin in the HTLC"
+echo "  commit_for_mint    - Seller commits to mint (requires secret hash)"
+echo "  mint_with_secret   - Buyer mints the NFT with secret reveal"
+echo "  claim_btc          - Seller claims Bitcoin (requires secret, hash, txid)"
 echo "  stop_services      - Stop all running services"
 echo ""
 echo "Bitcoin RPC: \$BTC_RPC_URL"
@@ -623,7 +616,7 @@ echo "Ethereum RPC: \$ETH_RPC_URL"
 echo "NFT Contract: \$NFT_CONTRACT_ADDRESS"
 EOF
     
-    chmod +x "$SETUP_DIR/demo_config.sh"
+    chmod +x "$SETUP_DIR/atomic_swap.sh"
     
     success "Test accounts and configuration created!"
 }
@@ -666,24 +659,22 @@ verify_setup() {
 print_usage_instructions() {
     echo
     echo -e "${GREEN}======================================${NC}"
-    echo -e "${GREEN}  Setup Complete! 🚀${NC}"
+    echo -e "${GREEN}  Setup Complete! ${NC}"
     echo -e "${GREEN}======================================${NC}"
     echo
     echo -e "${BLUE}To run the demo:${NC}"
     echo
     echo -e "1. ${YELLOW}Source the demo configuration:${NC}"
-    echo "   source ./demo_config.sh"
+    echo "   source ./atomic_swap.sh"
     echo
-    echo -e "2. ${YELLOW}Run the full automated demo:${NC}"
-    echo "   run_demo"
+    echo -e "2. ${YELLOW}Follow the rest of the demo guide${NC}"
     echo
-    echo -e "3. ${YELLOW}Or run individual steps:${NC}"
     echo "   # Start monitoring (optional):"
-    echo "   RUST_LOG=info cargo run --release -- monitor --eth-key \$BUYER_ETH_PRIVKEY --nft-contract \$NFT_CONTRACT_ADDRESS"
+    echo "   RUST_LOG=info ./target/release/client -- monitor --eth-key \$BUYER_ETH_PRIVKEY --nft-contract \$NFT_CONTRACT_ADDRESS"
     echo
     echo "   # In separate terminals, follow the step-by-step instructions from the buyer's output"
     echo
-    echo -e "${BLUE}Configuration saved to:${NC} demo_config.sh"
+    echo -e "${BLUE}Configuration saved to:${NC} atomic_swap.sh"
     echo -e "${BLUE}Setup log saved to:${NC} setup.log"
     echo -e "${BLUE}Bitcoin data directory:${NC} $BITCOIN_DATA_DIR"
     echo
@@ -695,7 +686,7 @@ print_usage_instructions() {
     fi
     echo
     echo -e "${YELLOW}To stop services:${NC}"
-    echo "  stop_services  # (after sourcing demo_config.sh)"
+    echo "  stop_services  # (after sourcing atomic_swap.sh)"
     echo "  # Or manually:"
     echo "  bitcoin-cli -regtest -datadir=\"$BITCOIN_DATA_DIR\" stop"
     echo "  kill \$(cat agent/eth/hardhat.pid 2>/dev/null) 2>/dev/null || true"

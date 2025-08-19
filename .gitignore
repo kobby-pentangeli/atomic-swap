@@ -23,4 +23,4 @@ typechain-types/
 # Demo output
 .bitcoin
 setup.log
-demo_config.sh
+atomic_swap.sh
