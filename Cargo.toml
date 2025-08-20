@@ -7,8 +7,9 @@ resolver = "3"
 bitcoin = { version = "0.32", features = ["serde", "rand"] }
 hex = "0.4"
 serde = { version = "1.0", features = ["derive"] }
-sha2 = "0.10.9"
-thiserror = "2.0.15"
+sha2 = "0.10"
+rand = "0.8"
+thiserror = "2"
 
 [profile.release]
 overflow-checks = true

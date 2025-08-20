@@ -1,3 +1,5 @@
+//! RPC client for Ethereum
+
 use std::sync::Arc;
 
 use anyhow::Context;

@@ -19,13 +19,12 @@ pub fn parse_network(network: &str) -> anyhow::Result<Network> {
         "signet" => Ok(Network::Signet),
         "regtest" | "reg" => Ok(Network::Regtest),
         _ => Err(anyhow::anyhow!(
-            "Invalid network '{}'. Supported: mainnet, testnet, signet, regtest",
-            network
+            "Invalid network '{network}'. Supported: mainnet, testnet, signet, regtest"
         )),
     }
 }
 
-pub fn validate_btc_key(key: &str, role: &str) -> Result<Keypair> {
+pub fn validate_btc_keypair(key: &str, role: &str) -> Result<Keypair> {
     key.parse::<Keypair>()
         .with_context(|| format!("Invalid Bitcoin private key for {}", role))
 }

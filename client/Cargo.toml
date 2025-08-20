@@ -1,6 +1,9 @@
 [package]
 name = "client"
 version = "0.1.0"
+description = "Client for cross-chain atomic swaps"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/kobby-pentangeli/crosschain-secret-mint"
 edition = "2024"
 default-run = "client"
 
@@ -14,18 +17,20 @@ path = "src/bin/derive_privkey.rs"
 
 [dependencies]
 btc-htlc = { path = "../agent/btc" }
+
 bitcoin = { workspace = true }
-bitcoincore-rpc = "0.19"
-ethers = "2.0"
 hex = { workspace = true }
-tokio = { version = "1.0", features = ["full"] }
+rand = { workspace = true }
 serde = { workspace = true }
-serde_json = "1.0"
 sha2 = { workspace = true }
-anyhow = "1.0"
 thiserror = { workspace = true }
+
+anyhow = "1.0"
+bitcoincore-rpc = "0.19"
+chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.0", features = ["derive"] }
-rand = "0.8"
+ethers = "2.0"
+serde_json = "1.0"
+tokio = { version = "1.0", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-chrono = { version = "0.4", features = ["serde"] }

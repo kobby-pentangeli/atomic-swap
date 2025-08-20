@@ -46,6 +46,7 @@ contract NFTSecretMint is
     /// @dev Time window for commitments (24 hours)
     uint256 public constant COMMITMENT_TIMEOUT = 24 hours;
 
+    // TODO (kobby-pentangeli): bump this for production
     /// @dev Minimum commitment time before reveal (prevents MEV)
     uint256 public constant MIN_COMMITMENT_TIME = 5 seconds;
 

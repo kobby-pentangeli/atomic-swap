@@ -1,4 +1,4 @@
-use bitcoin::{Address as BtcAddress, Network};
+use bitcoin::{Address as BtcAddress, BlockHash, Network, OutPoint, TxOut, Txid};
 use ethers::core::types::{Address as EthAddress, H256, U64, U256};
 use serde::{Deserialize, Serialize};
 
@@ -37,18 +37,16 @@ pub enum SwapEvent {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BitcoinTx {
-    pub txid: bitcoin::Txid,
+    pub txid: Txid,
     pub confirmations: u32,
-    pub block_hash: Option<bitcoin::BlockHash>,
+    pub block_hash: Option<BlockHash>,
     pub block_time: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
 pub struct UtxoInfo {
-    /// ID of the output.
-    pub outpoint: bitcoin::OutPoint,
-    /// Contents of the output.
-    pub tx_out: bitcoin::TxOut,
+    pub outpoint: OutPoint,
+    pub tx_out: TxOut,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -72,6 +70,7 @@ pub struct CommitmentInfo {
     pub token_uri: String,
 }
 
+#[derive(Debug)]
 pub struct LockBtcConfig {
     pub btc_rpc: String,
     pub btc_user: String,
@@ -83,6 +82,7 @@ pub struct LockBtcConfig {
     pub timeout: u32,
 }
 
+#[derive(Debug)]
 pub struct CommitForMintConfig {
     pub eth_rpc: String,
     pub seller_eth_key: String,
@@ -94,6 +94,7 @@ pub struct CommitForMintConfig {
     pub metadata_uri: String,
 }
 
+#[derive(Debug)]
 pub struct MintWithSecretConfig {
     pub eth_rpc: String,
     pub buyer_eth_key: String,
@@ -102,6 +103,7 @@ pub struct MintWithSecretConfig {
     pub token_id: u64,
 }
 
+#[derive(Debug)]
 pub struct ClaimBtcConfig {
     pub btc_rpc: String,
     pub btc_user: String,
@@ -111,12 +113,13 @@ pub struct ClaimBtcConfig {
     pub buyer_btc_pubkey: String,
     pub secret: [u8; 32],
     pub secret_hash: [u8; 32],
-    pub lock_txid: bitcoin::Txid,
+    pub lock_txid: Txid,
     pub lock_vout: u32,
     pub timeout: u32,
     pub destination: Option<BtcAddress>,
 }
 
+#[derive(Debug)]
 pub struct MonitorEventsConfig {
     pub btc_rpc: String,
     pub btc_user: String,

@@ -245,7 +245,7 @@ mod tests {
     }
 
     #[test]
-    fn test_hex_secret_conversion() {
+    fn hex_secret_conversion() {
         let original_secret = generate_random_secret();
         let hex_secret = hex::encode(original_secret);
         let parsed_secret = hex_to_secret(&hex_secret).unwrap();
@@ -254,14 +254,14 @@ mod tests {
     }
 
     #[test]
-    fn test_hex_with_prefix() {
+    fn hex_with_prefix() {
         let hex_secret = "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
         let secret = hex_to_secret(hex_secret).unwrap();
         assert_eq!(secret.len(), 32);
     }
 
     #[test]
-    fn test_invalid_length() {
+    fn invalid_length() {
         let short_hex = "0123456789abcdef"; // Only 16 hex chars = 8 bytes
         assert!(hex_to_secret(short_hex).is_err());
     }

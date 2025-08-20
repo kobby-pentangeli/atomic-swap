@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -e  # Exit on any error
+set -e
 
 # Colors for output
 RED='\033[0;31m'
@@ -189,11 +189,9 @@ main() {
 
 setup_bitcoin() {
     log "Setting up Bitcoin regtest environment..."
-    
-    # Create Bitcoin data directory in project root
+
     mkdir -p "$BITCOIN_DATA_DIR"
     
-    # Create bitcoin.conf with better configuration
     log "Creating Bitcoin configuration..."
     cat > "$BITCOIN_CONF" << 'EOF'
 # Global configuration
@@ -623,8 +621,7 @@ EOF
 
 verify_setup() {
     log "Verifying setup..."
-    
-    # Check Bitcoin
+
     if btc_info=$(bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" getblockchaininfo 2>/dev/null); then
         local block_count=$(echo "$btc_info" | jq -r .blocks)
         log "Bitcoin: $block_count blocks in regtest chain"

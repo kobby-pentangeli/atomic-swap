@@ -22,7 +22,7 @@ use crate::types::{
 // TODO (kobby-pentangeli):
 // Supply secret (preimage) as a file from CLI.
 pub async fn lock_bitcoin(config: LockBtcConfig) -> Result<()> {
-    let buyer_keypair = utils::validate_btc_key(&config.buyer_btc_key, "buyer")?;
+    let buyer_keypair = utils::validate_btc_keypair(&config.buyer_btc_key, "buyer")?;
     let seller_pubkey = utils::validate_btc_pubkey(&config.seller_btc_pubkey, "seller")?;
     let buyer_pubkey = PublicKey::from(buyer_keypair.public_key());
 
@@ -73,7 +73,7 @@ pub async fn lock_bitcoin(config: LockBtcConfig) -> Result<()> {
     // We log this for the demo
     info!("SECRET (hex): {}", hex::encode(secret_bytes));
     info!("SECRET_HASH: {}", hex::encode(secret_hash));
-    info!("LOCK_TXID: {}", lock_txid);
+    info!("LOCK_TXID: {lock_txid}");
 
     Ok(())
 }
@@ -202,7 +202,7 @@ pub async fn claim_bitcoin(config: ClaimBtcConfig) -> Result<()> {
         "Secret verification passed"
     );
 
-    let seller_keypair = utils::validate_btc_key(&config.seller_btc_key, "seller")?;
+    let seller_keypair = utils::validate_btc_keypair(&config.seller_btc_key, "seller")?;
     let buyer_pubkey = utils::validate_btc_pubkey(&config.buyer_btc_pubkey, "buyer")?;
     let seller_pubkey = PublicKey::from(seller_keypair.public_key());
 
@@ -314,7 +314,7 @@ pub async fn monitor_events(config: MonitorEventsConfig) -> Result<()> {
     tokio::select! {
         _ = async {
             while let Some(event) = rx.recv().await {
-                info!("Event: {}", event);
+                info!("Event: {event}");
             }
         } => {}
         _ = tokio::signal::ctrl_c() => {
@@ -340,10 +340,8 @@ fn format_swap_event(event: &SwapEvent) -> String {
             secret_hash,
         } => {
             format!(
-                "NFT Committed - Token: {}, Hash: {}, Tx: {}",
-                token_id,
-                hex::encode(secret_hash),
-                tx_hash
+                "NFT Committed - Token: {token_id}, Hash: {}, Tx: {tx_hash}",
+                hex::encode(secret_hash)
             )
         }
         SwapEvent::SecretRevealed {
@@ -352,10 +350,8 @@ fn format_swap_event(event: &SwapEvent) -> String {
             token_id,
         } => {
             format!(
-                "Secret Revealed - Token: {}, Secret: {}, Tx: {}",
-                token_id,
-                hex::encode(secret),
-                tx_hash
+                "Secret Revealed - Token: {token_id}, Secret: {}, Tx: {tx_hash}",
+                hex::encode(secret)
             )
         }
         SwapEvent::NFTMinted {
@@ -363,11 +359,8 @@ fn format_swap_event(event: &SwapEvent) -> String {
             token_id,
             owner,
         } => {
-            format!(
-                "NFT Minted - Token: {}, Owner: {:?}, Tx: {}",
-                token_id, owner, tx_hash
-            )
+            format!("NFT Minted - Token: {token_id}, Owner: {owner:?}, Tx: {tx_hash}")
         }
-        _ => format!("Swap Event: {:?}", event),
+        _ => format!("Swap Event: {event:?}"),
     }
 }

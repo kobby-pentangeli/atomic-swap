@@ -1,14 +1,15 @@
 [package]
 name = "btc-htlc"
-description = "Hash Time Locked Contract (HTLC) for Bitcoin"
 version = "0.1.0"
+description = "Hash Time Locked Contract (HTLC) for Bitcoin"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/kobby-pentangeli/crosschain-secret-mint"
 edition = "2024"
 
 [dependencies]
 anyhow = "1.0"
 bitcoin = { workspace = true }
 hex = { workspace = true }
-thiserror = { workspace = true }
+rand = { workspace = true }
 sha2 = { workspace = true }
-
-rand = "0.8"
+thiserror = { workspace = true }

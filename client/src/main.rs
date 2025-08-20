@@ -6,20 +6,21 @@ pub mod eth;
 pub mod execute;
 pub mod types;
 
-use types::{ClaimBtcConfig, CommitForMintConfig, LockBtcConfig, MonitorEventsConfig};
-
-use crate::types::MintWithSecretConfig;
+use types::{
+    ClaimBtcConfig, CommitForMintConfig, LockBtcConfig, MintWithSecretConfig, MonitorEventsConfig,
+};
 
 #[derive(Parser)]
 #[command(name = "crosschain-secret-mint")]
 #[command(about = "A cross-chain atomic swap: Bitcoin for NFT")]
-pub struct Cli {
+struct Cli {
     #[command(subcommand)]
-    pub command: Commands,
+    command: Commands,
 }
 
+// TODO (kobby-pentangeli): specify these params in `.env` or JSON
 #[derive(Subcommand)]
-pub enum Commands {
+enum Commands {
     /// Buyer locks Bitcoin
     LockBtc {
         /// Bitcoin RPC URL
@@ -41,7 +42,7 @@ pub enum Commands {
         #[arg(long)]
         seller_btc_pubkey: String,
         /// Amount of Bitcoin to lock (in satoshis)
-        #[arg(long, default_value = "1000000")] // 0.01 BTC
+        #[arg(long, default_value = "100000")] // 0.001 BTC
         btc_amount: u64,
         /// HTLC timeout in blocks
         #[arg(long, default_value = "144")] // ~24 hours on Bitcoin
@@ -188,9 +189,9 @@ async fn main() -> Result<()> {
                 btc_amount,
                 timeout,
             };
-
             execute::lock_bitcoin(config).await
         }
+
         Commands::CommitForMint {
             eth_rpc,
             seller_eth_key,
@@ -216,9 +217,9 @@ async fn main() -> Result<()> {
                     .context("Invalid buyer address")?,
                 metadata_uri,
             };
-
             execute::commit_for_mint(config).await
         }
+
         Commands::MintWithSecret {
             eth_rpc,
             buyer_eth_key,
@@ -235,9 +236,9 @@ async fn main() -> Result<()> {
                 secret: decode_hex_secret(&secret)?,
                 token_id,
             };
-
             execute::mint_with_secret(config).await
         }
+
         Commands::ClaimBtc {
             btc_rpc,
             btc_user,
@@ -269,9 +270,9 @@ async fn main() -> Result<()> {
                     .map(|s| btc::utils::parse_btc_address(&s, network))
                     .transpose()?,
             };
-
             execute::claim_bitcoin(config).await
         }
+
         Commands::MonitorEvents {
             btc_rpc,
             btc_user,
@@ -292,7 +293,6 @@ async fn main() -> Result<()> {
                     .parse()
                     .context("Invalid NFT contract address")?,
             };
-
             execute::monitor_events(config).await
         }
     }
@@ -300,12 +300,11 @@ async fn main() -> Result<()> {
 
 fn decode_hex_hash(hex_str: &str, field_name: &str) -> Result<[u8; 32]> {
     let bytes =
-        hex::decode(hex_str).with_context(|| format!("Invalid hex encoding for {}", field_name))?;
+        hex::decode(hex_str).with_context(|| format!("Invalid hex encoding for {field_name}"))?;
 
     bytes.clone().try_into().map_err(|_| {
         anyhow::anyhow!(
-            "Invalid {} length: expected 32 bytes, got {}",
-            field_name,
+            "Invalid {field_name} length: expected 32 bytes, got {}",
             bytes.len()
         )
     })
@@ -337,7 +336,6 @@ mod tests {
             parse_network("regtest").unwrap(),
             Network::Regtest
         ));
-
         assert!(parse_network("invalid").is_err());
     }
 

@@ -1,3 +1,5 @@
+//! RPC client for Bitcoin
+
 use anyhow::Context;
 use bitcoin::address::NetworkChecked;
 use bitcoin::key::Keypair;
@@ -33,10 +35,13 @@ impl BtcClient {
         let rpc = RpcClient::new(rpc_url, auth).context("Failed to create Bitcoin RPC client")?;
 
         // connection test
-        let _info = rpc
+        let info = rpc
             .get_blockchain_info()
             .context("Failed to connect to Bitcoin node")?;
-        info!("Connected to Bitcoin {network}");
+        info!(
+            "Connected to Bitcoin {network}. {} blocks processed",
+            info.blocks
+        );
 
         let signer = BtcTxSigner::new(keypair);
         let pubkey = signer.get_public_key()?;

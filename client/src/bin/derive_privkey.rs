@@ -4,7 +4,7 @@ use bitcoin::bip32::{DerivationPath, Xpriv};
 use bitcoin::secp256k1::Secp256k1;
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
+    let args = std::env::args().collect::<Vec<String>>();
     if args.len() < 3 {
         eprintln!("Usage: derive_privkey <xpriv> <derivation_path>");
         std::process::exit(1);
