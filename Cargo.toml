@@ -11,6 +11,10 @@ sha2 = "0.10"
 rand = "0.8"
 thiserror = "2"
 
+# https://github.com/briansmith/ring/discussions/2450
+ring = "0.17"
+
+
 [profile.release]
 overflow-checks = true
 lto = "fat"
