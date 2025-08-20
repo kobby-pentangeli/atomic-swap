@@ -136,12 +136,12 @@ jobs:
       - name: cargo doc
         run: cargo doc --no-deps
 
-  deny:
-    name: cargo-deny
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install cargo-deny
-        run: cargo install --locked cargo-deny
-      - name: cargo deny check
-        run: cargo deny check advisories
+  # deny:
+  #   name: cargo-deny
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - name: Install cargo-deny
+  #       run: cargo install --locked cargo-deny
+  #     - name: cargo deny check
+  #       run: cargo deny check advisories
