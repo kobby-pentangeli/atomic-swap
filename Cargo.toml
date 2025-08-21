@@ -1,5 +1,5 @@
 [workspace]
-members = ["agent/btc", "client"]
+members = ["agent/btc", "agent/sol/programs/*", "agent/sol/tests", "client"]
 
 resolver = "3"
 
