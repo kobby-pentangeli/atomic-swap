@@ -6,6 +6,7 @@ use anchor_client::solana_sdk::signature::read_keypair_file;
 use anchor_client::{Client, Cluster};
 
 #[test]
+#[ignore] // Ignore during `cargo test`
 fn test_initialize() {
     let program_id = "Dut9qhBMYA4nGejGPD2hb9ine7dR2z7LqYrZvrz6zENR";
     let anchor_wallet = std::env::var("ANCHOR_WALLET").unwrap();

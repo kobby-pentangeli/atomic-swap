@@ -209,8 +209,9 @@ pub fn generate_random_secret_hex() -> String {
     hex::encode(generate_random_secret())
 }
 
-pub fn generate_secret_from_preimage(p: &[u8]) -> [u8; 32] {
-    Sha256::digest(p).into()
+/// Compute the SHA256 digest of the given preimage (`secret`) bytes.
+pub fn hash_secret(secret: &[u8]) -> [u8; 32] {
+    Sha256::digest(secret).into()
 }
 
 /// Convert hex string to 32-byte array
@@ -271,7 +272,7 @@ mod tests {
         let (_, seller_pk) = create_test_keypair();
         let (_, buyer_pk) = create_test_keypair();
         let secret = generate_random_secret();
-        let secret_hash = generate_secret_from_preimage(&secret);
+        let secret_hash = hash_secret(&secret);
 
         let params = HtlcParams {
             secret_hash,
@@ -294,7 +295,7 @@ mod tests {
         let (_, seller_pk) = create_test_keypair();
         let (_, buyer_pk) = create_test_keypair();
         let secret = generate_random_secret();
-        let secret_hash = generate_secret_from_preimage(&secret);
+        let secret_hash = hash_secret(&secret);
 
         let params = HtlcParams {
             secret_hash,
@@ -317,7 +318,7 @@ mod tests {
         let (_, seller_pk) = create_test_keypair();
         let (_, buyer_pk) = create_test_keypair();
         let secret = generate_random_secret();
-        let secret_hash = generate_secret_from_preimage(&secret);
+        let secret_hash = hash_secret(&secret);
 
         let params = HtlcParams {
             secret_hash,

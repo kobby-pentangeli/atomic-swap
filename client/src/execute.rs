@@ -28,7 +28,7 @@ pub async fn lock_bitcoin(config: LockBtcConfig) -> Result<()> {
 
     let r_secret_hex = btc_htlc::generate_random_secret_hex(); // for now!
     let secret_bytes = btc_htlc::hex_to_secret(&r_secret_hex)?;
-    let secret_hash = btc_htlc::generate_secret_from_preimage(&secret_bytes);
+    let secret_hash = btc_htlc::hash_secret(&secret_bytes);
 
     let contract_params = HtlcParams {
         secret_hash,

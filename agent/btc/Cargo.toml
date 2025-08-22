@@ -7,9 +7,10 @@ repository = "https://github.com/kobby-pentangeli/crosschain-secret-mint"
 edition = "2024"
 
 [dependencies]
-anyhow = "1.0"
-bitcoin = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
+
+anyhow = "1.0"
+bitcoin = { version = "0.32", features = ["serde", "rand"] }
