@@ -14,10 +14,10 @@ use anchor_spl::token::{mint_to, Mint, MintTo, Token, TokenAccount};
 
 declare_id!("Dut9qhBMYA4nGejGPD2hb9ine7dR2z7LqYrZvrz6zENR");
 
-const MAX_NAME_LEN: usize = 32;
-const MAX_SYMBOL_LEN: usize = 10;
-const MAX_URI_LEN: usize = 200;
-const MIN_PRICE: u64 = 1; // in lamports
+pub const MAX_NAME_LEN: usize = 32;
+pub const MAX_SYMBOL_LEN: usize = 10;
+pub const MAX_URI_LEN: usize = 200;
+pub const MIN_PRICE: u64 = 1; // in lamports
 
 #[program]
 pub mod sol_htlc {

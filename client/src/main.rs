@@ -4,6 +4,7 @@ use clap::{Parser, Subcommand};
 pub mod btc;
 pub mod eth;
 pub mod execute;
+pub mod sol;
 pub mod types;
 
 use types::{
