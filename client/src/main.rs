@@ -7,9 +7,7 @@ pub mod execute;
 pub mod sol;
 pub mod types;
 
-use types::{
-    ClaimBtcConfig, CommitForMintConfig, LockBtcConfig, MintWithSecretConfig, MonitorEventsConfig,
-};
+use types::{ClaimBtcConfig, CommitForMintConfig, LockBtcConfig, MintWithSecretConfig};
 
 #[derive(Parser)]
 #[command(name = "crosschain-secret-mint")]
@@ -134,30 +132,6 @@ enum Commands {
         #[arg(long)]
         destination: Option<String>,
     },
-    /// Monitor events and swap state
-    MonitorEvents {
-        /// Bitcoin RPC URL
-        #[arg(long, default_value = "http://localhost:18443")]
-        btc_rpc: String,
-        /// Bitcoin RPC username
-        #[arg(long, default_value = "user")]
-        btc_user: String,
-        /// Bitcoin RPC password
-        #[arg(long, default_value = "password")]
-        btc_pass: String,
-        /// Bitcoin network
-        #[arg(long, default_value = "regtest")]
-        btc_network: String,
-        /// Ethereum RPC URL
-        #[arg(long, default_value = "http://localhost:8545")]
-        eth_rpc: String,
-        /// Ethereum private key for monitoring
-        #[arg(long)]
-        eth_key: String,
-        /// NFT contract address
-        #[arg(long)]
-        nft_contract: String,
-    },
 }
 
 #[tokio::main]
@@ -272,29 +246,6 @@ async fn main() -> Result<()> {
                     .transpose()?,
             };
             execute::claim_bitcoin(config).await
-        }
-
-        Commands::MonitorEvents {
-            btc_rpc,
-            btc_user,
-            btc_pass,
-            btc_network,
-            eth_rpc,
-            eth_key,
-            nft_contract,
-        } => {
-            let config = MonitorEventsConfig {
-                btc_rpc,
-                btc_user,
-                btc_pass,
-                btc_network: btc::utils::parse_network(&btc_network)?,
-                eth_rpc,
-                eth_key,
-                nft_contract: nft_contract
-                    .parse()
-                    .context("Invalid NFT contract address")?,
-            };
-            execute::monitor_events(config).await
         }
     }
 }

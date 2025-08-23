@@ -9,9 +9,9 @@ use bitcoin::{
 };
 use bitcoincore_rpc::{Auth, Client as RpcClient, RpcApi};
 use btc_htlc::Contract as BtcContract;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
-use crate::types::{BitcoinTx, UtxoInfo};
+use crate::types::UtxoInfo;
 
 mod signer;
 pub mod utils;
@@ -276,49 +276,6 @@ impl BtcClient {
         info!("Funds reclaimed successfully: {txid}");
 
         Ok(txid)
-    }
-
-    /// Get transaction information
-    pub fn get_transaction_info(&self, txid: &Txid) -> anyhow::Result<BitcoinTx> {
-        let tx_info = self
-            .rpc
-            .get_raw_transaction_info(txid, None)
-            .context("Failed to get transaction info")?;
-
-        Ok(BitcoinTx {
-            txid: *txid,
-            confirmations: tx_info.confirmations.unwrap_or(0),
-            block_hash: tx_info.blockhash,
-            block_time: tx_info.blocktime,
-        })
-    }
-
-    /// Monitor for new blocks
-    pub async fn monitor_blocks<F>(&self, mut callback: F) -> anyhow::Result<()>
-    where
-        F: FnMut(u64) -> anyhow::Result<()>,
-    {
-        let mut last_height = self.rpc.get_block_count()?;
-        info!("Starting block monitoring at height {}", last_height);
-
-        loop {
-            tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
-
-            match self.rpc.get_block_count() {
-                Ok(current_height) => {
-                    if current_height > last_height {
-                        debug!("New block detected: {}", current_height);
-                        if let Err(e) = callback(current_height) {
-                            error!("Block callback error: {}", e);
-                        }
-                        last_height = current_height;
-                    }
-                }
-                Err(e) => {
-                    warn!("Failed to get block count: {e}");
-                }
-            }
-        }
     }
 
     /// Get current network fee rate (sat/vB)

@@ -666,11 +666,6 @@ print_usage_instructions() {
     echo
     echo -e "2. ${YELLOW}Follow the rest of the demo guide${NC}"
     echo
-    echo "   # Start monitoring (optional):"
-    echo "   RUST_LOG=info ./target/release/client -- monitor --eth-key \$BUYER_ETH_PRIVKEY --nft-contract \$NFT_CONTRACT_ADDRESS"
-    echo
-    echo "   # In separate terminals, follow the step-by-step instructions from the buyer's output"
-    echo
     echo -e "${BLUE}Configuration saved to:${NC} atomic_swap.sh"
     echo -e "${BLUE}Setup log saved to:${NC} setup.log"
     echo -e "${BLUE}Bitcoin data directory:${NC} $BITCOIN_DATA_DIR"

@@ -1,62 +1,11 @@
-use bitcoin::{Address as BtcAddress, BlockHash, Network, OutPoint, TxOut, Txid};
-use ethers::core::types::{Address as EthAddress, H256, U64, U256};
+use bitcoin::{Address as BtcAddress, Network, OutPoint, TxOut, Txid};
+use ethers::core::types::{Address as EthAddress, U256};
 use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub enum SwapEvent {
-    BtcLocked {
-        txid: String,
-        amount: u64,
-        htlc_address: String,
-    },
-    EthCommitted {
-        tx_hash: String,
-        token_id: u64,
-        secret_hash: [u8; 32],
-    },
-    SecretRevealed {
-        tx_hash: String,
-        secret: [u8; 32],
-        token_id: u64,
-    },
-    NFTMinted {
-        tx_hash: String,
-        token_id: u64,
-        owner: EthAddress,
-    },
-    BtcClaimed {
-        txid: String,
-        amount: u64,
-    },
-    CommitCancelled {
-        token_id: u64,
-        secret: [u8; 32],
-        seller: EthAddress,
-    },
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct BitcoinTx {
-    pub txid: Txid,
-    pub confirmations: u32,
-    pub block_hash: Option<BlockHash>,
-    pub block_time: Option<usize>,
-}
 
 #[derive(Debug, Clone)]
 pub struct UtxoInfo {
     pub outpoint: OutPoint,
     pub tx_out: TxOut,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct EthereumTx {
-    pub hash: H256,
-    pub block_number: Option<U64>,
-    pub block_hash: Option<H256>,
-    pub tx_index: Option<U64>,
-    pub confirmations: Option<u64>,
-    pub gas_used: Option<U256>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
@@ -117,15 +66,4 @@ pub struct ClaimBtcConfig {
     pub lock_vout: u32,
     pub timeout: u32,
     pub destination: Option<BtcAddress>,
-}
-
-#[derive(Debug)]
-pub struct MonitorEventsConfig {
-    pub btc_rpc: String,
-    pub btc_user: String,
-    pub btc_pass: String,
-    pub btc_network: Network,
-    pub eth_rpc: String,
-    pub eth_key: String,
-    pub nft_contract: EthAddress,
 }

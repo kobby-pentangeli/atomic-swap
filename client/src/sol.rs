@@ -1,3 +1,5 @@
+//! RPC client for Solana
+
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -10,7 +12,7 @@ use anchor_lang::{solana_program, system_program};
 use anchor_spl::associated_token;
 use anchor_spl::metadata::mpl_token_metadata;
 use anyhow::{Context, Result, anyhow};
-use sol_htlc::{Commitment, MAX_NAME_LEN, MAX_SYMBOL_LEN, MAX_URI_LEN};
+use sol_htlc::{Commitment, MAX_NAME_LEN, MAX_SYMBOL_LEN, MAX_URI_LEN, ProgramState};
 use tracing::info;
 
 pub struct SolClient {
@@ -69,6 +71,13 @@ impl SolClient {
 
         info!("Program initialized successfully: {sig}");
         Ok(sig)
+    }
+
+    /// Check if program state is initialized
+    pub async fn is_initialized(&self) -> bool {
+        self.program
+            .account::<ProgramState>(self.program_state_pda)
+            .is_ok()
     }
 
     /// Create a commitment for NFT minting

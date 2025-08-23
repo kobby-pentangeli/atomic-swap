@@ -1,23 +1,17 @@
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use bitcoin::key::{Keypair, Secp256k1};
 use bitcoin::{Amount, PublicKey};
 use bitcoincore_rpc::Auth;
 use btc_htlc::{Contract as BtcContract, HtlcParams};
 use ethers::types::{H256, U256};
 use sha2::{Digest, Sha256};
-use tokio::sync::mpsc;
 use tokio::time::sleep;
-use tracing::{Instrument, debug, error, info, instrument};
+use tracing::{debug, info, instrument};
 
 use crate::btc::{BtcClient, utils};
 use crate::eth::EthClient;
-use crate::types::{
-    ClaimBtcConfig, CommitForMintConfig, LockBtcConfig, MintWithSecretConfig, MonitorEventsConfig,
-    SwapEvent,
-};
+use crate::types::{ClaimBtcConfig, CommitForMintConfig, LockBtcConfig, MintWithSecretConfig};
 
 // TODO (kobby-pentangeli):
 // Supply secret (preimage) as a file from CLI.
@@ -246,121 +240,4 @@ pub async fn claim_bitcoin(config: ClaimBtcConfig) -> Result<()> {
 
     info!("Cross-chain atomic swap fully completed - all parties have received their assets");
     Ok(())
-}
-
-#[instrument(skip_all)]
-pub async fn monitor_events(config: MonitorEventsConfig) -> Result<()> {
-    info!(
-        btc_network = %config.btc_network,
-        nft_contract = %config.nft_contract,
-        "Starting cross-chain event monitor"
-    );
-
-    let auth = Auth::UserPass(config.btc_user.clone(), config.btc_pass.clone());
-    let dummy_keypair = Keypair::new(&Secp256k1::new(), &mut rand::thread_rng());
-
-    let btc_client = Arc::new(
-        BtcClient::new(&config.btc_rpc, auth, config.btc_network, dummy_keypair)
-            .context("Failed to initialize Bitcoin client")?,
-    );
-
-    let eth_client = Arc::new(
-        EthClient::new(&config.eth_rpc, &config.eth_key, config.nft_contract)
-            .await
-            .context("Failed to initialize Ethereum client")?,
-    );
-
-    info!("Connected to both networks, starting event monitoring");
-
-    let (tx, mut rx) = mpsc::channel::<String>(1000);
-
-    let btc_client_clone = btc_client.clone();
-    let tx_btc = tx.clone();
-    let btc_monitor = tokio::spawn(
-        async move {
-            if let Err(e) = btc_client_clone
-                .monitor_blocks(move |height| {
-                    let _ = tx_btc.try_send(format!("Bitcoin block #{height}"));
-                    Ok(())
-                })
-                .await
-            {
-                error!(error = %e, "Bitcoin monitoring failed");
-            }
-        }
-        .instrument(tracing::info_span!("btc_monitor")),
-    );
-
-    let eth_client_clone = eth_client.clone();
-    let tx_eth = tx.clone();
-    let eth_monitor = tokio::spawn(
-        async move {
-            if let Err(e) = eth_client_clone
-                .monitor_events(move |event| {
-                    let event_str = format_swap_event(&event);
-                    let _ = tx_eth.try_send(event_str);
-                    Ok(())
-                })
-                .await
-            {
-                error!(error = %e, "Ethereum monitoring failed");
-            }
-        }
-        .instrument(tracing::info_span!("eth_monitor")),
-    );
-
-    info!("Event monitoring active. Press Ctrl+C to stop.");
-
-    tokio::select! {
-        _ = async {
-            while let Some(event) = rx.recv().await {
-                info!("Event: {event}");
-            }
-        } => {}
-        _ = tokio::signal::ctrl_c() => {
-            info!("Shutdown signal received");
-        }
-    }
-
-    info!("Shutting down monitoring tasks...");
-    btc_monitor.abort();
-    eth_monitor.abort();
-
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    info!("Event monitoring stopped");
-
-    Ok(())
-}
-
-fn format_swap_event(event: &SwapEvent) -> String {
-    match event {
-        SwapEvent::EthCommitted {
-            tx_hash,
-            token_id,
-            secret_hash,
-        } => {
-            format!(
-                "NFT Committed - Token: {token_id}, Hash: {}, Tx: {tx_hash}",
-                hex::encode(secret_hash)
-            )
-        }
-        SwapEvent::SecretRevealed {
-            tx_hash,
-            secret,
-            token_id,
-        } => {
-            format!(
-                "Secret Revealed - Token: {token_id}, Secret: {}, Tx: {tx_hash}",
-                hex::encode(secret)
-            )
-        }
-        SwapEvent::NFTMinted {
-            tx_hash,
-            token_id,
-            owner,
-        } => {
-            format!("NFT Minted - Token: {token_id}, Owner: {owner:?}, Tx: {tx_hash}")
-        }
-        _ => format!("Swap Event: {event:?}"),
-    }
 }
