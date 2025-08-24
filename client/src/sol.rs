@@ -73,13 +73,6 @@ impl SolClient {
         Ok(sig)
     }
 
-    /// Check if program state is initialized
-    pub async fn is_initialized(&self) -> bool {
-        self.program
-            .account::<ProgramState>(self.program_state_pda)
-            .is_ok()
-    }
-
     /// Create a commitment for NFT minting
     pub async fn commit_for_mint(
         &self,
@@ -232,5 +225,26 @@ impl SolClient {
     /// Get associated token account for a mint and owner
     pub fn get_associated_token_account(&self, owner: &Pubkey, mint: &Pubkey) -> Pubkey {
         associated_token::get_associated_token_address(owner, mint)
+    }
+
+    /// Check if program state is initialized
+    pub async fn is_initialized(&self) -> bool {
+        self.program_state().await.is_ok()
+    }
+
+    pub fn pubkey(&self) -> Pubkey {
+        self.payer.pubkey()
+    }
+
+    pub fn program_id(&self) -> Pubkey {
+        self.program_id
+    }
+
+    async fn program_state(&self) -> Result<ProgramState> {
+        let program_state = self
+            .program
+            .account::<ProgramState>(self.program_state_pda)
+            .context("Failed to fetch program state")?;
+        Ok(program_state)
     }
 }

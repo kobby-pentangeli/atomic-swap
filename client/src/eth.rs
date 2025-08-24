@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use anyhow::Context;
+use anyhow::{Context, Result, anyhow};
 use ethers::abi::Abi;
 use ethers::contract::Contract;
 use ethers::middleware::SignerMiddleware;
@@ -34,11 +34,7 @@ pub struct EthClient {
 }
 
 impl EthClient {
-    pub async fn new(
-        rpc_url: &str,
-        private_key: &str,
-        contract_addr: Address,
-    ) -> anyhow::Result<Self> {
+    pub async fn new(rpc_url: &str, private_key: &str, contract_addr: Address) -> Result<Self> {
         let provider =
             Provider::<Http>::try_from(rpc_url).context("Failed to create Ethereum provider")?;
         let chain_id = provider.get_chainid().await?.as_u64();
@@ -53,7 +49,7 @@ impl EthClient {
         let artifact: Value = serde_json::from_str(NFT_SECRET_MINT_JSON)?;
         let abi_json = artifact
             .get("abi")
-            .ok_or_else(|| anyhow::anyhow!("Missing ABI"))?
+            .ok_or_else(|| anyhow!("Missing ABI"))?
             .to_string();
         let abi = serde_json::from_str::<Abi>(&abi_json)?;
         let contract = Contract::new(contract_addr, abi, Arc::new(client));
@@ -80,12 +76,12 @@ impl EthClient {
         price: U256,
         buyer: Option<Address>,
         metadata_uri: String,
-    ) -> anyhow::Result<H256> {
+    ) -> Result<H256> {
         if self.is_token_committed(token_id).await? {
-            return Err(anyhow::anyhow!("Token already has an active commitment"));
+            return Err(anyhow!("Token already has an active commitment"));
         }
         if self.is_hash_used(secret_hash).await? {
-            return Err(anyhow::anyhow!("Secret hash has already been used"));
+            return Err(anyhow!("Secret hash has already been used"));
         }
 
         let buyer_addr = buyer.unwrap_or(Address::zero());
@@ -112,10 +108,10 @@ impl EthClient {
     }
 
     /// Mint NFT by revealing the secret
-    pub async fn mint_with_secret(&self, secret: H256, token_id: U256) -> anyhow::Result<H256> {
+    pub async fn mint_with_secret(&self, secret: H256, token_id: U256) -> Result<H256> {
         let commit = self.get_commitment(token_id).await?;
         if !commit.is_active {
-            return Err(anyhow::anyhow!("No active commitment for this token"));
+            return Err(anyhow!("No active commitment for this token"));
         }
         // TODO (kobby-pentangeli): uncomment in prod
         // if !self.can_mint_now(token_id).await? {
@@ -142,10 +138,10 @@ impl EthClient {
     }
 
     /// Cancel a commitment (only by seller or after timeout)
-    pub async fn cancel_commitment(&self, token_id: U256) -> anyhow::Result<H256> {
+    pub async fn cancel_commitment(&self, token_id: U256) -> Result<H256> {
         let commit = self.get_commitment(token_id).await?;
         if !commit.is_active {
-            return Err(anyhow::anyhow!("No active commitment to cancel"));
+            return Err(anyhow!("No active commitment to cancel"));
         }
 
         if commit.seller != self.wallet.address() {
@@ -154,7 +150,7 @@ impl EthClient {
                 .as_secs();
             let timeout_time = commit.commit_time.as_u64() + (24 * 60 * 60); // 24 hours
             if current_time < timeout_time {
-                return Err(anyhow::anyhow!("Only seller can cancel before timeout"));
+                return Err(anyhow!("Only seller can cancel before timeout"));
             }
         }
 
@@ -177,7 +173,7 @@ impl EthClient {
     }
 
     /// Get commitment information for a token
-    pub async fn get_commitment(&self, token_id: U256) -> anyhow::Result<CommitmentInfo> {
+    pub async fn get_commitment(&self, token_id: U256) -> Result<CommitmentInfo> {
         let result: (
             [u8; 32], // secretHash
             Address,  // seller
@@ -205,7 +201,7 @@ impl EthClient {
     }
 
     /// Check if a commitment is still valid
-    pub async fn is_commitment_valid(&self, token_id: U256) -> anyhow::Result<bool> {
+    pub async fn is_commitment_valid(&self, token_id: U256) -> Result<bool> {
         let valid: bool = self
             .contract
             .method(IS_COMMITMENT_VALID, token_id)?
@@ -216,7 +212,7 @@ impl EthClient {
     }
 
     /// Check if minimum commitment time has passed
-    pub async fn can_mint_now(&self, token_id: U256) -> anyhow::Result<bool> {
+    pub async fn can_mint_now(&self, token_id: U256) -> Result<bool> {
         let can_mint: bool = self
             .contract
             .method(CAN_MINT_NOW, token_id)?
@@ -227,14 +223,14 @@ impl EthClient {
     }
 
     /// Get current gas price
-    pub async fn get_gas_price(&self) -> anyhow::Result<U256> {
+    pub async fn get_gas_price(&self) -> Result<U256> {
         self.provider
             .get_gas_price()
             .await
             .context("Failed to get gas price")
     }
 
-    pub async fn get_balance(&self) -> anyhow::Result<U256> {
+    pub async fn get_balance(&self) -> Result<U256> {
         self.provider
             .get_balance(self.wallet.address(), None)
             .await
@@ -246,13 +242,13 @@ impl EthClient {
     }
 
     /// Check if a token already has an active commitment
-    async fn is_token_committed(&self, token_id: U256) -> anyhow::Result<bool> {
+    async fn is_token_committed(&self, token_id: U256) -> Result<bool> {
         let commitment = self.get_commitment(token_id).await?;
         Ok(commitment.is_active)
     }
 
     /// Check if a secret hash has already been used
-    async fn is_hash_used(&self, secret_hash: H256) -> anyhow::Result<bool> {
+    async fn is_hash_used(&self, secret_hash: H256) -> Result<bool> {
         // Query the hashToTokenId mapping
         let token_id: U256 = self
             .contract

@@ -28,6 +28,7 @@ This system enables trustless atomic swaps between Bitcoin and Ethereum/Solana N
 - [ ] Solana HTLC program
 - [ ] Solana client
 - [ ] Architectural diagram
+- [ ] Dockerize demo
 
 ## End-to-end Demo
 

@@ -7,7 +7,12 @@ pub mod execute;
 pub mod sol;
 pub mod types;
 
-use types::{ClaimBtcConfig, CommitForMintConfig, LockBtcConfig, MintWithSecretConfig};
+use types::{Chain, ClaimBtcArgs, CommitForMintArgs, LockBtcArgs, MintWithSecretArgs};
+
+const DEFAULT_BTC_RPC_URL: &str = "http://localhost:18443";
+const DEFAULT_ETH_RPC_URL: &str = "http://localhost:8545";
+const DEFAULT_SOL_RPC_URL: &str = "http://localhost:8899";
+const DEFAULT_SOL_WS_URL: &str = "ws://localhost:8900";
 
 #[derive(Parser)]
 #[command(name = "crosschain-secret-mint")]
@@ -23,7 +28,7 @@ enum Commands {
     /// Buyer locks Bitcoin
     LockBtc {
         /// Bitcoin RPC URL
-        #[arg(long, default_value = "http://localhost:18443")]
+        #[arg(long, default_value = DEFAULT_BTC_RPC_URL)]
         btc_rpc: String,
         /// Bitcoin RPC username
         #[arg(long, default_value = "user")]
@@ -47,56 +52,106 @@ enum Commands {
         #[arg(long, default_value = "144")] // ~24 hours on Bitcoin
         timeout: u32,
     },
+
     /// Seller commits NFT after buyer locks Bitcoin
     CommitForMint {
-        /// Ethereum RPC URL
-        #[arg(long, default_value = "http://localhost:8545")]
-        eth_rpc: String,
-        /// Seller's Ethereum private key (hex)
+        /// Target blockchain for NFT minting (eth/sol)
         #[arg(long)]
-        seller_eth_key: String,
-        /// NFT contract address
+        chain: String,
+
+        // Ethereum-specific options
+        /// Ethereum RPC URL (required if chain=eth)
+        #[arg(long, default_value = DEFAULT_ETH_RPC_URL)]
+        eth_rpc: Option<String>,
+        /// Seller's Ethereum private key (required if chain=eth)
         #[arg(long)]
-        nft_contract: String,
+        seller_eth_key: Option<String>,
+        /// NFT contract address (required if chain=eth)
+        #[arg(long)]
+        nft_contract: Option<String>,
+        /// Buyer's Ethereum address (optional, for restricted minting)
+        #[arg(long)]
+        buyer_address: Option<String>,
+
+        // Solana-specific options
+        /// Solana RPC URL (required if chain=sol)
+        #[arg(long, default_value = DEFAULT_SOL_RPC_URL)]
+        sol_rpc: Option<String>,
+        /// Solana WebSocket URL (required if chain=sol)
+        #[arg(long, default_value = DEFAULT_SOL_WS_URL)]
+        sol_ws: Option<String>,
+        /// Seller's Solana keypair file path (required if chain=sol)
+        #[arg(long)]
+        seller_sol_keypair: Option<String>,
+        /// Solana HTLC program ID (required if chain=sol)
+        #[arg(long)]
+        program_id: Option<String>,
+        /// NFT name (required if chain=sol)
+        #[arg(long)]
+        name: Option<String>,
+        /// NFT symbol (required if chain=sol)
+        #[arg(long)]
+        symbol: Option<String>,
+
+        // Common fields
         /// Secret hash from buyer's Bitcoin lock (hex)
         #[arg(long)]
         secret_hash: String,
         /// Token ID to commit for minting
         #[arg(long)]
         token_id: u64,
-        /// NFT price in wei
+        /// NFT price (wei for Ethereum, lamports for Solana)
         #[arg(long)]
         nft_price: u64,
-        /// Buyer's Ethereum address (optional, for restricted minting)
-        #[arg(long)]
-        buyer_address: Option<String>,
         /// NFT metadata URI
         #[arg(long)]
         metadata_uri: String,
     },
-    /// Buyer reveals shared secret to mint NFT after seller commitment
-    /// is confirmed
+
+    /// Buyer reveals shared secret to mint NFT
     MintWithSecret {
-        /// Ethereum RPC URL
-        #[arg(long, default_value = "http://localhost:8545")]
-        eth_rpc: String,
-        /// Buyer's Ethereum private key (hex)
+        /// Target blockchain for NFT minting (eth/sol)
         #[arg(long)]
-        buyer_eth_key: String,
-        /// NFT contract address
+        chain: String,
+
+        // Ethereum-specific options
+        /// Ethereum RPC URL (required if chain=eth)
+        #[arg(long, default_value = DEFAULT_ETH_RPC_URL)]
+        eth_rpc: Option<String>,
+        /// Buyer's Ethereum private key (hex, required if chain=eth)
         #[arg(long)]
-        nft_contract: String,
-        /// Shared secret
+        buyer_eth_key: Option<String>,
+        /// NFT contract address (required if chain=eth)
+        #[arg(long)]
+        nft_contract: Option<String>,
+
+        // Solana-specific options
+        /// Solana RPC URL (required if chain=sol)
+        #[arg(long, default_value = DEFAULT_SOL_RPC_URL)]
+        sol_rpc: Option<String>,
+        /// Solana WebSocket URL (required if chain=sol)
+        #[arg(long, default_value = DEFAULT_SOL_WS_URL)]
+        sol_ws: Option<String>,
+        /// Buyer's Solana keypair file path (required if chain=sol)
+        #[arg(long)]
+        buyer_sol_keypair: Option<String>,
+        /// Solana HTLC program ID (required if chain=sol)
+        #[arg(long)]
+        program_id: Option<String>,
+
+        // Common fields
+        /// Shared secret (hex)
         #[arg(long)]
         secret: String,
         /// Token ID to mint
-        #[arg(long, default_value = "1")]
+        #[arg(long)]
         token_id: u64,
     },
+
     /// Seller claims Bitcoin using revealed secret
     ClaimBtc {
         /// Bitcoin RPC URL
-        #[arg(long, default_value = "http://localhost:18443")]
+        #[arg(long, default_value = DEFAULT_BTC_RPC_URL)]
         btc_rpc: String,
         /// Bitcoin RPC username
         #[arg(long, default_value = "user")]
@@ -154,7 +209,7 @@ async fn main() -> Result<()> {
             btc_amount,
             timeout,
         } => {
-            let config = LockBtcConfig {
+            let args = LockBtcArgs {
                 btc_rpc,
                 btc_user,
                 btc_pass,
@@ -164,54 +219,147 @@ async fn main() -> Result<()> {
                 btc_amount,
                 timeout,
             };
-            execute::lock_bitcoin(config).await
+
+            execute::lock_bitcoin(args).await
         }
 
         Commands::CommitForMint {
+            chain,
             eth_rpc,
             seller_eth_key,
             nft_contract,
+            buyer_address,
+            sol_rpc,
+            sol_ws,
+            seller_sol_keypair,
+            program_id,
+            name,
+            symbol,
             secret_hash,
             token_id,
             nft_price,
-            buyer_address,
             metadata_uri,
         } => {
-            let config = CommitForMintConfig {
+            let chain = chain
+                .parse::<Chain>()
+                .context("Invalid chain specification")?;
+
+            let args = CommitForMintArgs {
+                chain: chain.clone(),
+                // Ethereum fields
                 eth_rpc,
                 seller_eth_key,
                 nft_contract: nft_contract
-                    .parse()
+                    .map(|s| s.parse())
+                    .transpose()
                     .context("Invalid NFT contract address")?,
-                secret_hash: decode_hex_hash(&secret_hash, "secret hash")?,
-                token_id,
-                nft_price,
                 buyer_address: buyer_address
                     .map(|s| s.parse())
                     .transpose()
                     .context("Invalid buyer address")?,
+                // Solana fields
+                sol_rpc,
+                sol_ws,
+                seller_sol_keypair,
+                program_id,
+                name,
+                symbol,
+                // Common fields
+                secret_hash: decode_hex_hash(&secret_hash, "secret hash")?,
+                token_id,
+                nft_price,
                 metadata_uri,
             };
-            execute::commit_for_mint(config).await
+
+            match chain {
+                Chain::Ethereum => {
+                    if args.eth_rpc.is_none()
+                        || args.seller_eth_key.is_none()
+                        || args.nft_contract.is_none()
+                    {
+                        return Err(anyhow::anyhow!(
+                            "For Ethereum: --eth-rpc, --seller-eth-key, and --nft-contract are required"
+                        ));
+                    }
+                }
+                Chain::Solana => {
+                    if args.sol_rpc.is_none()
+                        || args.sol_ws.is_none()
+                        || args.seller_sol_keypair.is_none()
+                        || args.program_id.is_none()
+                        || args.name.is_none()
+                        || args.symbol.is_none()
+                    {
+                        return Err(anyhow::anyhow!(
+                            "For Solana: --sol-rpc, --sol-ws, --seller-sol-keypair, --program-id, --name, and --symbol are required"
+                        ));
+                    }
+                }
+            }
+
+            execute::commit_for_mint(args).await
         }
 
         Commands::MintWithSecret {
+            chain,
             eth_rpc,
             buyer_eth_key,
             nft_contract,
+            sol_rpc,
+            sol_ws,
+            buyer_sol_keypair,
+            program_id,
             secret,
             token_id,
         } => {
-            let config = MintWithSecretConfig {
+            let chain = chain
+                .parse::<Chain>()
+                .context("Invalid chain specification")?;
+
+            let args = MintWithSecretArgs {
+                chain: chain.clone(),
+                // Ethereum fields
                 eth_rpc,
                 buyer_eth_key,
                 nft_contract: nft_contract
-                    .parse()
+                    .map(|s| s.parse())
+                    .transpose()
                     .context("Invalid NFT contract address")?,
+                // Solana fields
+                sol_rpc,
+                sol_ws,
+                buyer_sol_keypair,
+                program_id,
+                // Common fields
                 secret: decode_hex_secret(&secret)?,
                 token_id,
             };
-            execute::mint_with_secret(config).await
+
+            match chain {
+                Chain::Ethereum => {
+                    if args.eth_rpc.is_none()
+                        || args.buyer_eth_key.is_none()
+                        || args.nft_contract.is_none()
+                    {
+                        return Err(anyhow::anyhow!(
+                            "For Ethereum: --eth-rpc, --buyer-eth-key, and --nft-contract are required"
+                        ));
+                    }
+                }
+                Chain::Solana => {
+                    if args.sol_rpc.is_none()
+                        || args.sol_ws.is_none()
+                        || args.buyer_sol_keypair.is_none()
+                        || args.program_id.is_none()
+                    {
+                        return Err(anyhow::anyhow!(
+                            "For Solana: --sol-rpc, --sol-ws, --buyer-sol-keypair, and --program-id are required"
+                        ));
+                    }
+                }
+            }
+
+            execute::mint_with_secret(args).await
         }
 
         Commands::ClaimBtc {
@@ -229,7 +377,7 @@ async fn main() -> Result<()> {
             destination,
         } => {
             let network = btc::utils::parse_network(&btc_network)?;
-            let config = ClaimBtcConfig {
+            let args = ClaimBtcArgs {
                 btc_rpc,
                 btc_user,
                 btc_pass,
@@ -245,7 +393,8 @@ async fn main() -> Result<()> {
                     .map(|s| btc::utils::parse_btc_address(&s, network))
                     .transpose()?,
             };
-            execute::claim_bitcoin(config).await
+
+            execute::claim_bitcoin(args).await
         }
     }
 }
