@@ -51,7 +51,7 @@ impl BtcClient {
         })
     }
 
-    pub async fn lock_funds(&self, contract: &BtcContract, amt: Amount) -> Result<Txid> {
+    pub fn lock_funds(&self, contract: &BtcContract, amt: Amount) -> Result<Txid> {
         let address = contract.address();
         info!("Funding contract at {address} with {} BTC", amt.to_btc());
 
@@ -110,7 +110,7 @@ impl BtcClient {
         Ok(txid)
     }
 
-    pub async fn claim_funds(
+    pub fn claim_funds(
         &self,
         contract: &BtcContract,
         secret: &[u8; 32],
@@ -188,7 +188,7 @@ impl BtcClient {
     }
 
     /// Reclaim funds after timeout (buyer recovery)
-    pub async fn reclaim_funds_timeout(
+    pub fn reclaim_funds_timeout(
         &self,
         contract: &BtcContract,
         txid: Txid,

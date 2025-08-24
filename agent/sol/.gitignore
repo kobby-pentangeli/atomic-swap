@@ -5,3 +5,7 @@ target
 node_modules
 test-ledger
 .yarn
+
+# demo run output
+solana.pid
+program_id.txt

@@ -14,15 +14,10 @@ cpi = ["no-entrypoint"]
 no-entrypoint = []
 no-idl = []
 no-log-ix-name = []
-idl-build = ["anchor-lang/idl-build"]
+idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
 
 
 [dependencies]
 anchor-lang = { version = "0.31.1", features = ["init-if-needed"] }
 anchor-spl = { version = "0.31.1", features = ["metadata"] }
 mpl-token-metadata = "5.1.1"
-
-[dev-dependencies]
-solana-program-test = "3.0.0"
-solana-sdk = "3.0.0"
-tokio = "1.0"

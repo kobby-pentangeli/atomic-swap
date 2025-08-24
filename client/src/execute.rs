@@ -17,7 +17,7 @@ use crate::types::{Chain, ClaimBtcArgs, CommitForMintArgs, LockBtcArgs, MintWith
 
 // TODO (kobby-pentangeli):
 // Supply secret (preimage) as a file from CLI.
-pub async fn lock_bitcoin(args: LockBtcArgs) -> Result<()> {
+pub fn lock_bitcoin(args: LockBtcArgs) -> Result<()> {
     info!("Executing Bitcoin HTLC");
 
     let buyer_keypair = utils::validate_btc_keypair(&args.buyer_btc_key, "buyer")?;
@@ -56,7 +56,6 @@ pub async fn lock_bitcoin(args: LockBtcArgs) -> Result<()> {
 
     let lock_txid = btc_client
         .lock_funds(&btc_contract, amount)
-        .await
         .context("Failed to lock Bitcoin funds")?;
 
     info!(
@@ -79,14 +78,14 @@ pub async fn lock_bitcoin(args: LockBtcArgs) -> Result<()> {
 pub async fn commit_for_mint(args: CommitForMintArgs) -> Result<()> {
     match args.chain {
         Chain::Ethereum => commit_for_mint_eth(args).await,
-        Chain::Solana => commit_for_mint_sol(args).await,
+        Chain::Solana => tokio::task::spawn_blocking(move || commit_for_mint_sol(args)).await?,
     }
 }
 
 pub async fn mint_with_secret(args: MintWithSecretArgs) -> Result<()> {
     match args.chain {
         Chain::Ethereum => mint_with_secret_eth(args).await,
-        Chain::Solana => mint_with_secret_sol(args).await,
+        Chain::Solana => tokio::task::spawn_blocking(move || mint_with_secret_sol(args)).await?,
     }
 }
 
@@ -149,7 +148,7 @@ async fn commit_for_mint_eth(args: CommitForMintArgs) -> Result<()> {
     Ok(())
 }
 
-async fn commit_for_mint_sol(args: CommitForMintArgs) -> Result<()> {
+fn commit_for_mint_sol(args: CommitForMintArgs) -> Result<()> {
     info!("Executing Solana NFT commitment for minting");
 
     let program_id = args.program_id.as_ref().unwrap();
@@ -164,22 +163,20 @@ async fn commit_for_mint_sol(args: CommitForMintArgs) -> Result<()> {
     let metadata_uri = args.metadata_uri;
     let nft_price = args.nft_price;
 
-    let payer = read_keypair_file(keypair_path).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let payer = read_keypair_file(keypair_path).map_err(|e| anyhow!("{e}"))?;
 
     let client = SolClient::new(payer, program_id, rpc_url, ws_url)
-        .await
         .context("Failed to initialize Solana client")?;
 
-    if !client.is_initialized().await {
+    if !client.is_initialized() {
         info!("Program not initialized, attempting to initialize...");
         let sig = client
             .initialize()
-            .await
             .context("Failed to initialize Solana program")?;
         info!(signature = %sig, "Program initialized successfully");
     }
 
-    match client.get_commitment_by_hash(secret_hash).await {
+    match client.get_commitment(token_id) {
         Ok(commitment) if !commitment.is_used => {
             return Err(anyhow!(
                 "Token {token_id} already has an active commitment from {}",
@@ -203,7 +200,6 @@ async fn commit_for_mint_sol(args: CommitForMintArgs) -> Result<()> {
             symbol.clone(),
             metadata_uri.clone(),
         )
-        .await
         .context("Failed to commit NFT for minting on Solana")?;
 
     info!(
@@ -270,7 +266,7 @@ async fn mint_with_secret_eth(args: MintWithSecretArgs) -> Result<()> {
     Ok(())
 }
 
-async fn mint_with_secret_sol(args: MintWithSecretArgs) -> Result<()> {
+fn mint_with_secret_sol(args: MintWithSecretArgs) -> Result<()> {
     info!("Executing Solana NFT mint with secret reveal");
 
     let rpc_url = args.sol_rpc.as_ref().unwrap();
@@ -280,7 +276,6 @@ async fn mint_with_secret_sol(args: MintWithSecretArgs) -> Result<()> {
     let payer = read_keypair_file(keypair_path).map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let client = SolClient::new(payer, program_id, rpc_url, ws_url)
-        .await
         .context("Failed to initialize Solana client")?;
 
     info!(
@@ -290,7 +285,6 @@ async fn mint_with_secret_sol(args: MintWithSecretArgs) -> Result<()> {
 
     let sig = client
         .mint_with_secret(args.secret, args.token_id)
-        .await
         .context("Failed to execute Solana NFT mint transaction")?;
 
     info!(
@@ -304,7 +298,7 @@ async fn mint_with_secret_sol(args: MintWithSecretArgs) -> Result<()> {
 }
 
 #[instrument(skip_all)]
-pub async fn claim_bitcoin(args: ClaimBtcArgs) -> Result<()> {
+pub fn claim_bitcoin(args: ClaimBtcArgs) -> Result<()> {
     info!(
         lock_txid = %args.lock_txid,
         lock_vout = %args.lock_vout,
@@ -358,7 +352,6 @@ pub async fn claim_bitcoin(args: ClaimBtcArgs) -> Result<()> {
             args.lock_vout,
             args.destination.clone(),
         )
-        .await
         .context("Failed to claim Bitcoin funds")?;
 
     info!(

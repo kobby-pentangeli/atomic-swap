@@ -220,7 +220,7 @@ async fn main() -> Result<()> {
                 timeout,
             };
 
-            execute::lock_bitcoin(args).await
+            execute::lock_bitcoin(args)
         }
 
         Commands::CommitForMint {
@@ -394,7 +394,7 @@ async fn main() -> Result<()> {
                     .transpose()?,
             };
 
-            execute::claim_bitcoin(args).await
+            execute::claim_bitcoin(args)
         }
     }
 }

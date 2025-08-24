@@ -113,13 +113,11 @@ contract NFTSecretMint is
         address buyer,
         string calldata metadataURI
     ) external nonReentrant whenNotPaused {
-        // Validate inputs
         if (secretHash == bytes32(0)) revert InvalidSecret();
         if (commitments[tokenId].isActive) revert TokenAlreadyCommitted();
         if (hashToTokenId[secretHash] != 0) revert HashAlreadyUsed();
         if (bytes(metadataURI).length == 0) revert InvalidCommitment();
 
-        // Create commitment
         commitments[tokenId] = MintCommitment({
             secretHash: secretHash,
             seller: msg.sender,
@@ -130,7 +128,6 @@ contract NFTSecretMint is
             tokenURI: metadataURI
         });
 
-        // Track hash usage
         hashToTokenId[secretHash] = tokenId;
 
         emit CommitmentCreated(
@@ -154,45 +151,29 @@ contract NFTSecretMint is
     ) external payable nonReentrant whenNotPaused {
         MintCommitment storage commitment = commitments[tokenId];
 
-        // Validate commitment exists and is active
         if (!commitment.isActive) revert InvalidCommitment();
 
-        // Check commitment hasn't expired
         if (block.timestamp > commitment.commitTime + COMMITMENT_TIMEOUT) {
             revert CommitmentExpired();
         }
-
-        // Enforce minimum commitment time (MEV protection)
         if (block.timestamp < commitment.commitTime + MIN_COMMITMENT_TIME) {
             revert CommitmentTooEarly();
         }
 
-        // Verify secret matches hash
         bytes32 computedHash = sha256(abi.encodePacked(secret));
         if (computedHash != commitment.secretHash) revert InvalidSecret();
-
-        // Check secret hasn't been revealed before
         if (revealedSecrets[secret]) revert SecretAlreadyRevealed();
-
-        // Check buyer authorization (if specified)
         if (commitment.buyer != address(0) && msg.sender != commitment.buyer) {
             revert UnauthorizedCaller();
         }
-
-        // Check payment
         if (msg.value != commitment.price) revert InvalidPrice();
 
-        // Mark secret as revealed
         revealedSecrets[secret] = true;
-
-        // Deactivate commitment
         commitment.isActive = false;
 
-        // Mint NFT
         _safeMint(msg.sender, tokenId);
         _setTokenURI(tokenId, commitment.tokenURI);
 
-        // Transfer payment to seller
         if (commitment.price > 0) {
             (bool success, ) = payable(commitment.seller).call{
                 value: msg.value
@@ -219,7 +200,6 @@ contract NFTSecretMint is
 
         if (!canCancel) revert UnauthorizedCaller();
 
-        // Clear the commitment
         bytes32 secretHash = commitment.secretHash;
         delete commitments[tokenId];
         delete hashToTokenId[secretHash];

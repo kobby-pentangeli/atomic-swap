@@ -4,7 +4,6 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use anchor_client::solana_sdk::commitment_config::CommitmentConfig;
-use anchor_client::solana_sdk::keccak;
 use anchor_client::solana_sdk::pubkey::Pubkey;
 use anchor_client::solana_sdk::signature::{Keypair, Signature, Signer};
 use anchor_client::{Client, Cluster, Program};
@@ -23,12 +22,7 @@ pub struct SolClient {
 }
 
 impl SolClient {
-    pub async fn new(
-        payer: Keypair,
-        program_id: &str,
-        rpc_url: &str,
-        ws_url: &str,
-    ) -> Result<Self> {
+    pub fn new(payer: Keypair, program_id: &str, rpc_url: &str, ws_url: &str) -> Result<Self> {
         let payer = Arc::new(payer);
         let client = Client::new_with_options(
             Cluster::Custom(rpc_url.to_string(), ws_url.to_string()),
@@ -56,7 +50,7 @@ impl SolClient {
     }
 
     /// Initialize the program state (should be called once by authority)
-    pub async fn initialize(&self) -> Result<Signature> {
+    pub fn initialize(&self) -> Result<Signature> {
         let sig = self
             .program
             .request()
@@ -68,13 +62,11 @@ impl SolClient {
             .args(sol_htlc::instruction::Initialize {})
             .send()
             .context("Failed to initialize program")?;
-
-        info!("Program initialized successfully: {sig}");
         Ok(sig)
     }
 
     /// Create a commitment for NFT minting
-    pub async fn commit_for_mint(
+    pub fn commit_for_mint(
         &self,
         secret_hash: [u8; 32],
         token_id: u64,
@@ -96,12 +88,14 @@ impl SolClient {
             return Err(anyhow!("Price must be greater than 0"));
         }
 
-        if self.get_commitment_by_hash(secret_hash).await.is_ok() {
-            return Err(anyhow!("Commitment already exists for this hash"));
+        if self.get_commitment(token_id).is_ok() {
+            return Err(anyhow!("Commitment already exists for this token ID"));
         }
 
-        let (commitment, _) =
-            Pubkey::find_program_address(&[b"commitment", &secret_hash], &self.program_id);
+        let (commitment, _) = Pubkey::find_program_address(
+            &[b"commitment", &token_id.to_le_bytes()],
+            &self.program_id,
+        );
         let (mint, _) =
             Pubkey::find_program_address(&[b"mint", &token_id.to_le_bytes()], &self.program_id);
 
@@ -133,10 +127,8 @@ impl SolClient {
     }
 
     /// Mint NFT by revealing the secret
-    pub async fn mint_with_secret(&self, secret: [u8; 32], token_id: u64) -> Result<Signature> {
-        let secret_hash = keccak::hash(&secret).to_bytes();
-
-        let commitment = self.get_commitment_by_hash(secret_hash).await?;
+    pub fn mint_with_secret(&self, secret: [u8; 32], token_id: u64) -> Result<Signature> {
+        let commitment = self.get_commitment(token_id)?;
         if commitment.is_used {
             return Err(anyhow!("Commitment has already been used"));
         }
@@ -144,8 +136,10 @@ impl SolClient {
             return Err(anyhow!("Token ID mismatch"));
         }
 
-        let (commitment_pda, _) =
-            Pubkey::find_program_address(&[b"commitment", &secret_hash], &self.program_id);
+        let (commitment_pda, _) = Pubkey::find_program_address(
+            &[b"commitment", &token_id.to_le_bytes()],
+            &self.program_id,
+        );
         let (mint_pda, _) =
             Pubkey::find_program_address(&[b"mint", &token_id.to_le_bytes()], &self.program_id);
         let token_account = self.get_associated_token_account(&self.payer.pubkey(), &mint_pda);
@@ -184,8 +178,8 @@ impl SolClient {
     }
 
     /// Cancel a commitment
-    pub async fn cancel_commitment(&self, secret_hash: [u8; 32]) -> Result<Signature> {
-        let commitment = self.get_commitment_by_hash(secret_hash).await?;
+    pub fn cancel_commitment(&self, token_id: u64) -> Result<Signature> {
+        let commitment = self.get_commitment(token_id)?;
         if commitment.seller != self.payer.pubkey() {
             return Err(anyhow!("Only the seller can cancel the commitment"));
         }
@@ -193,8 +187,10 @@ impl SolClient {
             return Err(anyhow!("Cannot cancel a used commitment"));
         }
 
-        let (commitment, _) =
-            Pubkey::find_program_address(&[b"commitment", &secret_hash], &self.program_id);
+        let (commitment, _) = Pubkey::find_program_address(
+            &[b"commitment", &token_id.to_le_bytes()],
+            &self.program_id,
+        );
 
         let sig = self
             .program
@@ -211,10 +207,12 @@ impl SolClient {
         Ok(sig)
     }
 
-    /// Get commitment information by hash
-    pub async fn get_commitment_by_hash(&self, hash: [u8; 32]) -> Result<Commitment> {
-        let (commit_pda, _) =
-            Pubkey::find_program_address(&[b"commitment", &hash], &self.program_id);
+    /// Retrieve the commitment account information for the given token_id
+    pub fn get_commitment(&self, token_id: u64) -> Result<Commitment> {
+        let (commit_pda, _) = Pubkey::find_program_address(
+            &[b"commitment", &token_id.to_le_bytes()],
+            &self.program_id,
+        );
         let commit_acc = self
             .program
             .account::<Commitment>(commit_pda)
@@ -228,8 +226,8 @@ impl SolClient {
     }
 
     /// Check if program state is initialized
-    pub async fn is_initialized(&self) -> bool {
-        self.program_state().await.is_ok()
+    pub fn is_initialized(&self) -> bool {
+        self.program_state().is_ok()
     }
 
     pub fn pubkey(&self) -> Pubkey {
@@ -240,7 +238,7 @@ impl SolClient {
         self.program_id
     }
 
-    async fn program_state(&self) -> Result<ProgramState> {
+    fn program_state(&self) -> Result<ProgramState> {
         let program_state = self
             .program
             .account::<ProgramState>(self.program_state_pda)

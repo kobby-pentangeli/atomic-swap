@@ -6,7 +6,8 @@
 #![allow(deprecated)]
 
 use anchor_lang::prelude::*;
-use anchor_lang::solana_program::{keccak, system_instruction};
+use anchor_lang::solana_program::hash::hash;
+use anchor_lang::solana_program::system_instruction;
 use anchor_spl::associated_token::AssociatedToken;
 use anchor_spl::metadata::mpl_token_metadata::types::DataV2;
 use anchor_spl::metadata::{create_metadata_accounts_v3, CreateMetadataAccountsV3, Metadata};
@@ -96,8 +97,8 @@ pub mod sol_htlc {
         require!(!commitment.is_used, ErrorCode::CommitmentAlreadyUsed);
         require!(commitment.token_id == token_id, ErrorCode::TokenIdMismatch);
 
-        let computed_hash = keccak::hash(&secret);
-        require!(computed_hash.0 == commitment.hash, ErrorCode::InvalidSecret);
+        let computed_hash = hash(&secret).to_bytes();
+        require!(computed_hash == commitment.hash, ErrorCode::InvalidSecret);
 
         // Transfer payment from buyer to seller
         anchor_lang::solana_program::program::invoke(
@@ -251,7 +252,7 @@ pub struct CommitForMint<'info> {
         payer = seller,
         space = 8 + 32 + 8 + 8 + 32 + 32 +
                 (4 + MAX_NAME_LEN) + (4 + MAX_SYMBOL_LEN) + (4 + MAX_URI_LEN) + 1 + 1,
-        seeds = [b"commitment", hash.as_ref()],
+        seeds = [b"commitment", token_id.to_le_bytes().as_ref()],
         bump
     )]
     pub commitment: Account<'info, Commitment>,
@@ -286,7 +287,7 @@ pub struct CommitForMint<'info> {
 pub struct MintWithSecret<'info> {
     #[account(
         mut,
-        seeds = [b"commitment", keccak::hash(&secret).to_bytes().as_ref()],
+        seeds = [b"commitment", token_id.to_le_bytes().as_ref()],
         bump = commitment.bump
     )]
     pub commitment: Account<'info, Commitment>,
