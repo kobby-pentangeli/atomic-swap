@@ -19,14 +19,15 @@ This system enables trustless atomic swaps between Bitcoin and Ethereum/Solana N
 
 - [x] Bitcoin HTLC (script locking mechanism)
 - [x] Ethereum NFT (standard ERC721) contract
+- [x] Solana HTLC program
 - [x] Bitcoin client
 - [x] Ethereum client
+- [x] Solana client
 - [x] End-to-end demo for BTC<=>ETH swap
+- [x] End-to-end demo for BTC<=>SOL swap
 
 ### TODO
 
-- [ ] Solana HTLC program
-- [ ] Solana client
 - [ ] Architectural diagram
 - [ ] Dockerize demo
 
