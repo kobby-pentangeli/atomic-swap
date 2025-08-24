@@ -17,8 +17,10 @@ path = "src/bin/derive_privkey.rs"
 
 [dependencies]
 btc-htlc = { path = "../agent/btc" }
+sol-htlc = { path = "../agent/sol/programs/sol-htlc", features = [
+    "no-entrypoint",
+] }
 
-bitcoin = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true }
@@ -26,6 +28,7 @@ sha2 = { workspace = true }
 thiserror = { workspace = true }
 
 anyhow = "1.0"
+bitcoin = { version = "0.32", features = ["serde", "rand"] }
 bitcoincore-rpc = "0.19"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.0", features = ["derive"] }
@@ -34,3 +37,8 @@ serde_json = "1.0"
 tokio = { version = "1.0", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+anchor-client = "0.31.1"
+anchor-lang = "0.31.1"
+anchor-spl = { version = "0.31.1", features = ["metadata"] }
+solana-client = "3.0.0"

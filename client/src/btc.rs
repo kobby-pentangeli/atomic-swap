@@ -1,6 +1,6 @@
 //! RPC client for Bitcoin
 
-use anyhow::Context;
+use anyhow::{Context, Result, anyhow};
 use bitcoin::address::NetworkChecked;
 use bitcoin::key::Keypair;
 use bitcoin::{
@@ -9,14 +9,13 @@ use bitcoin::{
 };
 use bitcoincore_rpc::{Auth, Client as RpcClient, RpcApi};
 use btc_htlc::Contract as BtcContract;
-use tracing::{debug, error, info, warn};
-
-use crate::types::{BitcoinTx, UtxoInfo};
+use tracing::{debug, info, warn};
 
 mod signer;
 pub mod utils;
 
 use signer::BtcTxSigner;
+use utils::UtxoInfo;
 
 pub struct BtcClient {
     rpc: RpcClient,
@@ -26,12 +25,7 @@ pub struct BtcClient {
 }
 
 impl BtcClient {
-    pub fn new(
-        rpc_url: &str,
-        auth: Auth,
-        network: Network,
-        keypair: Keypair,
-    ) -> anyhow::Result<Self> {
+    pub fn new(rpc_url: &str, auth: Auth, network: Network, keypair: Keypair) -> Result<Self> {
         let rpc = RpcClient::new(rpc_url, auth).context("Failed to create Bitcoin RPC client")?;
 
         // connection test
@@ -57,13 +51,13 @@ impl BtcClient {
         })
     }
 
-    pub async fn lock_funds(&self, contract: &BtcContract, amt: Amount) -> anyhow::Result<Txid> {
+    pub fn lock_funds(&self, contract: &BtcContract, amt: Amount) -> Result<Txid> {
         let address = contract.address();
         info!("Funding contract at {address} with {} BTC", amt.to_btc());
 
         let utxos = self.get_spendable_utxos(amt + Amount::from_sat(1000), &[&self.own_address])?; // +fee buffer
         if utxos.is_empty() {
-            return Err(anyhow::anyhow!("Insufficient funds"));
+            return Err(anyhow!("Insufficient funds"));
         }
         let total_input = utxos.iter().map(|utxo| utxo.tx_out.value).sum::<Amount>();
 
@@ -89,7 +83,6 @@ impl BtcClient {
         }];
 
         if change_amt > Amount::from_sat(546) {
-            // Dust limit
             let change_addr = self.get_new_address()?;
             outputs.push(TxOut {
                 value: change_amt,
@@ -117,18 +110,18 @@ impl BtcClient {
         Ok(txid)
     }
 
-    pub async fn claim_funds(
+    pub fn claim_funds(
         &self,
         contract: &BtcContract,
         secret: &[u8; 32],
         txid: Txid,
         vout: u32,
         destination: Option<Address>,
-    ) -> anyhow::Result<Txid> {
+    ) -> Result<Txid> {
         info!("Claiming funds for {txid}:{vout} with secret");
 
         if !contract.verify_secret(secret) {
-            return Err(anyhow::anyhow!("Secret does not match contract hash"));
+            return Err(anyhow!("Secret does not match contract hash"));
         }
 
         let tx = self
@@ -141,7 +134,7 @@ impl BtcClient {
             .context("Lock tx output not found")?;
 
         if output.script_pubkey != contract.address().script_pubkey() {
-            return Err(anyhow::anyhow!("Lock transaction output script mismatch"));
+            return Err(anyhow!("Lock transaction output script mismatch"));
         }
 
         let dest_addr = match destination {
@@ -154,11 +147,11 @@ impl BtcClient {
 
         let fee = self.estimate_fee_for_htlc_claim()?;
         if output.value <= fee {
-            return Err(anyhow::anyhow!("amount insufficient to cover fee"));
+            return Err(anyhow!("amount insufficient to cover fee"));
         }
         let amt = output.value - fee;
         if amt <= Amount::from_sat(546) {
-            return Err(anyhow::anyhow!("amount too small after fee"));
+            return Err(anyhow!("amount too small after fee"));
         }
 
         let tx = Transaction {
@@ -195,18 +188,18 @@ impl BtcClient {
     }
 
     /// Reclaim funds after timeout (buyer recovery)
-    pub async fn reclaim_funds_timeout(
+    pub fn reclaim_funds_timeout(
         &self,
         contract: &BtcContract,
         txid: Txid,
         vout: u32,
         destination: Option<Address>,
-    ) -> anyhow::Result<Txid> {
+    ) -> Result<Txid> {
         info!("Reclaiming {txid}:{vout} after timeout");
 
         let current_height = self.rpc.get_block_count()?;
         if current_height < contract.timeout as u64 {
-            return Err(anyhow::anyhow!(
+            return Err(anyhow!(
                 "timeout not reached. current height: {} timeout height: {}",
                 current_height,
                 contract.timeout
@@ -223,7 +216,7 @@ impl BtcClient {
             .context("HTLC output not found")?;
 
         if output.script_pubkey != contract.address().script_pubkey() {
-            return Err(anyhow::anyhow!("Output script mismatch"));
+            return Err(anyhow!("Output script mismatch"));
         }
 
         let dest_address = match destination {
@@ -236,12 +229,12 @@ impl BtcClient {
 
         let fee = self.estimate_fee_for_htlc_timeout()?;
         if output.value <= fee {
-            return Err(anyhow::anyhow!("amount insufficient to cover fee"));
+            return Err(anyhow!("amount insufficient to cover fee"));
         }
         let amt = output.value - fee;
 
         if amt <= Amount::from_sat(546) {
-            return Err(anyhow::anyhow!("amount too small after fee"));
+            return Err(anyhow!("amount too small after fee"));
         }
 
         let tx = Transaction {
@@ -278,51 +271,8 @@ impl BtcClient {
         Ok(txid)
     }
 
-    /// Get transaction information
-    pub fn get_transaction_info(&self, txid: &Txid) -> anyhow::Result<BitcoinTx> {
-        let tx_info = self
-            .rpc
-            .get_raw_transaction_info(txid, None)
-            .context("Failed to get transaction info")?;
-
-        Ok(BitcoinTx {
-            txid: *txid,
-            confirmations: tx_info.confirmations.unwrap_or(0),
-            block_hash: tx_info.blockhash,
-            block_time: tx_info.blocktime,
-        })
-    }
-
-    /// Monitor for new blocks
-    pub async fn monitor_blocks<F>(&self, mut callback: F) -> anyhow::Result<()>
-    where
-        F: FnMut(u64) -> anyhow::Result<()>,
-    {
-        let mut last_height = self.rpc.get_block_count()?;
-        info!("Starting block monitoring at height {}", last_height);
-
-        loop {
-            tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
-
-            match self.rpc.get_block_count() {
-                Ok(current_height) => {
-                    if current_height > last_height {
-                        debug!("New block detected: {}", current_height);
-                        if let Err(e) = callback(current_height) {
-                            error!("Block callback error: {}", e);
-                        }
-                        last_height = current_height;
-                    }
-                }
-                Err(e) => {
-                    warn!("Failed to get block count: {e}");
-                }
-            }
-        }
-    }
-
     /// Get current network fee rate (sat/vB)
-    pub fn get_fee_rate(&self) -> anyhow::Result<f64> {
+    pub fn get_fee_rate(&self) -> Result<f64> {
         // Try to get smart fee estimate for 6 blocks
         match self.rpc.estimate_smart_fee(6, None) {
             Ok(fee_result) => {
@@ -345,7 +295,7 @@ impl BtcClient {
         &self,
         min_amount: Amount,
         addresses: &[&Address<NetworkChecked>],
-    ) -> anyhow::Result<Vec<UtxoInfo>> {
+    ) -> Result<Vec<UtxoInfo>> {
         let unspent = self
             .rpc
             .list_unspent(None, None, Some(addresses), None, None)
@@ -382,7 +332,7 @@ impl BtcClient {
         }
 
         if total < min_amount {
-            return Err(anyhow::anyhow!(
+            return Err(anyhow!(
                 "Insufficient funds: need {}, have {}",
                 min_amount.to_btc(),
                 total.to_btc()
@@ -396,11 +346,8 @@ impl BtcClient {
         );
         Ok(utxos)
     }
-    fn estimate_fee_for_htlc_funding(
-        &self,
-        inputs: usize,
-        outputs: usize,
-    ) -> anyhow::Result<Amount> {
+
+    fn estimate_fee_for_htlc_funding(&self, inputs: usize, outputs: usize) -> Result<Amount> {
         let fee_rate = self.get_fee_rate()?;
         // Standard P2WPKH inputs, P2WSH output
         let estimated_vbytes = 11 + (inputs * 68) + (outputs * 43); // P2WSH output is larger
@@ -408,7 +355,7 @@ impl BtcClient {
         Ok(Amount::from_sat(fee_sats))
     }
 
-    fn estimate_fee_for_htlc_claim(&self) -> anyhow::Result<Amount> {
+    fn estimate_fee_for_htlc_claim(&self) -> Result<Amount> {
         let fee_rate = self.get_fee_rate()?;
         // P2WSH input with HTLC script (reveal path) + P2WPKH output
         let estimated_vbytes = 11 + 150 + 31; // HTLC claim is larger due to script + secret
@@ -416,7 +363,7 @@ impl BtcClient {
         Ok(Amount::from_sat(fee_sats))
     }
 
-    fn estimate_fee_for_htlc_timeout(&self) -> anyhow::Result<Amount> {
+    fn estimate_fee_for_htlc_timeout(&self) -> Result<Amount> {
         let fee_rate = self.get_fee_rate()?;
         // P2WSH input with HTLC script (timeout path) + P2WPKH output
         let estimated_vbytes = 11 + 120 + 31; // HTLC timeout is smaller than claim
@@ -425,7 +372,7 @@ impl BtcClient {
     }
 
     /// Get a new address from the wallet
-    fn get_new_address(&self) -> anyhow::Result<Address> {
+    fn get_new_address(&self) -> Result<Address> {
         let addr = self
             .rpc
             .get_new_address(None, None)?

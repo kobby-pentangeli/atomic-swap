@@ -22,5 +22,8 @@ typechain-types/
 
 # Demo output
 .bitcoin
-setup.log
+*.log
+.solana-ledger
+buyer-keypair.json
+seller-keypair.json
 atomic_swap.sh

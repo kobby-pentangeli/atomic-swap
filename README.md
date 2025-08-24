@@ -19,15 +19,17 @@ This system enables trustless atomic swaps between Bitcoin and Ethereum/Solana N
 
 - [x] Bitcoin HTLC (script locking mechanism)
 - [x] Ethereum NFT (standard ERC721) contract
+- [x] Solana HTLC program
 - [x] Bitcoin client
 - [x] Ethereum client
+- [x] Solana client
 - [x] End-to-end demo for BTC<=>ETH swap
+- [x] End-to-end demo for BTC<=>SOL swap
 
 ### TODO
 
-- [ ] Solana HTLC program
-- [ ] Solana client
 - [ ] Architectural diagram
+- [ ] Dockerize demo
 
 ## End-to-end Demo
 
@@ -105,14 +107,20 @@ The above command will load the demo config and execute the first step of the sw
 
 ```bash
 # 2. (SELLER): Run this for the seller to commit to the NFT
-commit_for_mint <SECRET_HASH>
+commit_for_mint --chain <eth|sol> <SECRET_HASH>
+
+# example command: commit_for_mint --chain eth <SECRET_HASH>
+#                  commit_for_mint --chain sol <SECRET_HASH>
 ```
 
 #### 2.3 Mint with secret
 
 ```bash
 # 3. (BUYER): Run this for the buyer to mint NFT via reveal.
-mint_with_secret <SECRET>
+mint_with_secret --chain <eth|sol> <SECRET>
+
+# example command: mint_with_secret --chain eth <SECRET>
+#                  mint_with_secret --chain sol <SECRET>
 ```
 
 #### 2.4 Claim bitcoin

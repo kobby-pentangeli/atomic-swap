@@ -180,6 +180,7 @@ main() {
     
     setup_bitcoin
     setup_ethereum
+    setup_solana
     generate_test_accounts
     verify_setup
     
@@ -307,6 +308,132 @@ setup_ethereum() {
     
     cd "$SETUP_DIR"
     success "Ethereum environment ready!"
+}
+
+setup_solana() {
+    log "Setting up Solana development environment..."
+    
+    if ! command -v solana &> /dev/null; then
+        warn "Solana CLI not found. Installing..."
+        
+        log "Downloading and installing Solana CLI..."
+        sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
+        export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"
+        
+        if ! command -v solana &> /dev/null; then
+            error "Failed to install Solana CLI. Please install manually: https://solana.com/docs/intro/installation#install-the-solana-cli"
+        fi
+    fi
+    
+    if ! command -v anchor &> /dev/null; then
+        warn "Anchor framework not found. Installing..."
+        
+        log "Installing Anchor..."
+        cargo install --git https://github.com/solana-foundation/anchor avm --force && avm install latest && avm use latest
+        
+        if ! command -v anchor &> /dev/null; then
+            error "Failed to install Anchor. Please install manually: https://solana.com/docs/intro/installation#install-anchor-cli"
+        fi
+    fi
+    
+    log "Starting Solana test validator..."
+
+    pkill -f "solana-test-validator" 2>/dev/null || true
+    sleep 2
+
+    solana-test-validator \
+        --reset \
+        --rpc-port 8899 \
+        --ledger .solana-ledger \
+        --log \
+        --clone metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s \
+        --clone-upgradeable-program metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s \
+        --url https://api.mainnet-beta.solana.com \
+        > solana.log 2>&1 &
+    
+    local solana_pid=$!
+    echo "$solana_pid" > $SETUP_DIR/agent/sol/solana.pid
+    
+    wait_for_solana
+    
+    log "Generating Solana keypairs..."
+    
+    if [ ! -f "buyer-keypair.json" ]; then
+        solana-keygen new --no-bip39-passphrase --silent --outfile buyer-keypair.json
+    fi
+    
+    if [ ! -f "seller-keypair.json" ]; then
+        solana-keygen new --no-bip39-passphrase --silent --outfile seller-keypair.json
+    fi
+    
+    local buyer_pubkey=$(solana-keygen pubkey buyer-keypair.json)
+    local seller_pubkey=$(solana-keygen pubkey seller-keypair.json)
+    
+    log "Funding Solana accounts..."
+    solana airdrop 10 "$buyer_pubkey" --url http://localhost:8899
+    solana airdrop 10 "$seller_pubkey" --url http://localhost:8899
+    
+    log "Buyer Solana address: $buyer_pubkey"
+    log "Seller Solana address: $seller_pubkey"
+
+    if [ -d "$SETUP_DIR/agent/sol" ]; then
+        log "Building and deploying Solana program..."
+        cd "$SETUP_DIR/agent/sol"
+        
+        log "Syncing Anchor keys..."
+        anchor keys sync
+        
+        log "Building Anchor program..."
+        anchor build
+        
+        log "Deploying program to local validator..."
+        anchor deploy --provider.cluster localnet
+        
+        # Extract program ID
+        if [ -f "target/deploy/sol_htlc-keypair.json" ]; then
+            local program_id=$(solana-keygen pubkey target/deploy/sol_htlc-keypair.json)
+            echo "$program_id" > program_id.txt
+            log "Program deployed with ID: $program_id"
+        else
+            warn "Program keypair not found, checking Anchor.toml..."
+            local program_id=$(grep -o 'sol_htlc = "[^"]*"' Anchor.toml | cut -d'"' -f2)
+            if [ -n "$program_id" ]; then
+                echo "$program_id" > program_id.txt
+                log "Program ID from Anchor.toml: $program_id"
+            else
+                error "Could not determine program ID. Check anchor build output."
+            fi
+        fi
+        
+        cd "$SETUP_DIR"
+    else
+        warn "Solana agent directory not found at $SETUP_DIR/agent/sol, skipping program deployment"
+        echo "11111111111111111111111111111112" > program_id.txt
+        warn "Using placeholder program ID. Deploy your actual program and update SOL_PROGRAM_ID"
+    fi
+    
+    success "Solana environment ready!"
+}
+
+wait_for_solana() {
+    local max_attempts=30
+    local attempt=1
+    
+    log "Waiting for Solana test validator to start..."
+    
+    while [ $attempt -le $max_attempts ]; do
+        if solana cluster-version --url http://localhost:8899 &>/dev/null; then
+            success "Solana test validator is ready!"
+            return 0
+        fi
+        
+        echo -n "."
+        sleep 2
+        ((attempt++))
+    done
+    
+    error "Solana test validator failed to start within $((max_attempts * 2)) seconds"
+    return 1
 }
 
 generate_test_accounts() {
@@ -466,6 +593,14 @@ generate_test_accounts() {
     fi
     
     log "Creating demo configuration..."
+
+    local program_id="11111111111111111111111111111112"
+    if [ -f "$SETUP_DIR/agent/sol/program_id.txt" ]; then
+        program_id=$(cat "$SETUP_DIR/agent/sol/program_id.txt")
+    elif [ -f "$SETUP_DIR/program_id.txt" ]; then
+        program_id=$(cat "$SETUP_DIR/program_id.txt")
+    fi
+
     cat > "$SETUP_DIR/atomic_swap.sh" << EOF
 #!/bin/bash
 
@@ -483,12 +618,18 @@ export BTC_DATA_DIR="$BITCOIN_DATA_DIR"
 export ETH_RPC_URL="http://localhost:8545"
 export NFT_CONTRACT_ADDRESS="$contract_address"
 
+# Solana Configuration
+export SOL_RPC_URL="http://localhost:8899"
+export SOL_WS_URL="ws://localhost:8900"
+export SOL_PROGRAM_ID="$program_id"
+
 # Buyer Keys
 export BUYER_BTC_PRIVKEY="$buyer_btc_privkey"
 export BUYER_BTC_ADDRESS="$buyer_btc_address"
 export BUYER_BTC_PUBKEY="$buyer_btc_pubkey"
 export BUYER_ETH_PRIVKEY="$buyer_eth_privkey"
 export BUYER_ETH_ADDRESS="$buyer_eth_address"
+export BUYER_SOL_KEYPAIR="buyer-keypair.json"
 
 # Seller Keys
 export SELLER_BTC_PRIVKEY="$seller_btc_privkey"
@@ -496,12 +637,16 @@ export SELLER_BTC_PUBKEY="$seller_btc_pubkey"
 export SELLER_BTC_ADDRESS="$seller_btc_address"
 export SELLER_ETH_PRIVKEY="$seller_eth_privkey"
 export SELLER_ETH_ADDRESS="$seller_eth_address"
+export SELLER_SOL_KEYPAIR="seller-keypair.json"
 
 # Demo Parameters
 export BTC_AMOUNT="100000"  # 0.001 BTC in satoshis
-export NFT_PRICE="1000000000000000000"  # 1 ETH in wei
+export ETH_NFT_PRICE="1000000000000000000"  # 1 ETH in wei
+export SOL_NFT_PRICE="1000000000"  # 1 SOL in lamports
 export TOKEN_ID="1"
 export METADATA_URI="https://example.com/nft/1.json"
+export NFT_NAME="Demo NFT"
+export NFT_SYMBOL="DEMO"
 export HTLC_TIMEOUT="144"  # blocks
 
 # Step 1: Lock bitcoin
@@ -524,35 +669,103 @@ lock_btc() {
 
 # Commit NFT with shared secret
 commit_for_mint() {
-    local secret_hash="\$1"
-    if [ -z "\$secret_hash" ]; then
-        echo "Usage: commit_for_mint <SECRET_HASH>"
+    local chain="\$1"
+    local secret_hash="\$2"
+    
+    if [ -z "\$chain" ] || [ -z "\$secret_hash" ]; then
+        echo "Usage: commit_for_mint --chain <eth|sol> <SECRET_HASH>"
+        echo "  or:  commit_for_mint <SECRET_HASH> --chain <eth|sol>"
         return 1
     fi
     
-    RUST_LOG=info ./target/release/client commit-for-mint \\
-        --seller-eth-key "\$SELLER_ETH_PRIVKEY" \\
-        --nft-contract "\$NFT_CONTRACT_ADDRESS" \\
-        --secret-hash "\$secret_hash" \\
-        --token-id "\$TOKEN_ID" \\
-        --nft-price "\$NFT_PRICE" \\
-        --buyer-address "\$BUYER_ETH_ADDRESS" \\
-        --metadata-uri "\$METADATA_URI"
+    # Handle argument order flexibility
+    if [ "\$chain" = "--chain" ]; then
+        chain="\$2"
+        secret_hash="\$3"
+    elif [ "\$secret_hash" = "--chain" ]; then
+        secret_hash="\$1"
+        chain="\$3"
+    fi
+    
+    case "\$chain" in
+        "eth")
+            RUST_LOG=info ./target/release/client commit-for-mint \\
+                --chain "eth" \\
+                --eth-rpc "\$ETH_RPC_URL" \\
+                --seller-eth-key "\$SELLER_ETH_PRIVKEY" \\
+                --nft-contract "\$NFT_CONTRACT_ADDRESS" \\
+                --secret-hash "\$secret_hash" \\
+                --token-id "\$TOKEN_ID" \\
+                --nft-price "\$ETH_NFT_PRICE" \\
+                --buyer-address "\$BUYER_ETH_ADDRESS" \\
+                --metadata-uri "\$METADATA_URI"
+            ;;
+        "sol")
+            RUST_LOG=info ./target/release/client commit-for-mint \\
+                --chain "sol" \\
+                --sol-rpc "\$SOL_RPC_URL" \\
+                --sol-ws "\$SOL_WS_URL" \\
+                --seller-sol-keypair "\$SELLER_SOL_KEYPAIR" \\
+                --program-id "\$SOL_PROGRAM_ID" \\
+                --name "\$NFT_NAME" \\
+                --symbol "\$NFT_SYMBOL" \\
+                --secret-hash "\$secret_hash" \\
+                --token-id "\$TOKEN_ID" \\
+                --nft-price "\$SOL_NFT_PRICE" \\
+                --metadata-uri "\$METADATA_URI"
+            ;;
+        *)
+            echo "Error: Invalid chain '\$chain'. Use 'eth' or 'sol'"
+            return 1
+            ;;
+    esac
 }
 
 # Mint the NFT with shared secret
 mint_with_secret() {
-    local secret="\$1"
-    if [ -z "\$secret" ]; then
-        echo "Usage: mint_with_secret <SECRET>"
+    local chain="\$1"
+    local secret="\$2"
+    
+    if [ -z "\$chain" ] || [ -z "\$secret" ]; then
+        echo "Usage: mint_with_secret --chain <eth|sol> <SECRET>"
+        echo "  or:  mint_with_secret <SECRET> --chain <eth|sol>"
         return 1
     fi
     
-    RUST_LOG=info ./target/release/client mint-with-secret \\
-        --buyer-eth-key "\$BUYER_ETH_PRIVKEY" \\
-        --nft-contract "\$NFT_CONTRACT_ADDRESS" \\
-        --secret "\$secret" \\
-        --token-id "\$TOKEN_ID" \\
+    # Handle argument order flexibility
+    if [ "\$chain" = "--chain" ]; then
+        chain="\$2"
+        secret="\$3"
+    elif [ "\$secret" = "--chain" ]; then
+        secret="\$1"
+        chain="\$3"
+    fi
+    
+    case "\$chain" in
+        "eth")
+            RUST_LOG=info ./target/release/client mint-with-secret \\
+                --chain "eth" \\
+                --eth-rpc "\$ETH_RPC_URL" \\
+                --buyer-eth-key "\$BUYER_ETH_PRIVKEY" \\
+                --nft-contract "\$NFT_CONTRACT_ADDRESS" \\
+                --secret "\$secret" \\
+                --token-id "\$TOKEN_ID"
+            ;;
+        "sol")
+            RUST_LOG=info ./target/release/client mint-with-secret \\
+                --chain "sol" \\
+                --sol-rpc "\$SOL_RPC_URL" \\
+                --sol-ws "\$SOL_WS_URL" \\
+                --buyer-sol-keypair "\$BUYER_SOL_KEYPAIR" \\
+                --program-id "\$SOL_PROGRAM_ID" \\
+                --secret "\$secret" \\
+                --token-id "\$TOKEN_ID"
+            ;;
+        *)
+            echo "Error: Invalid chain '\$chain'. Use 'eth' or 'sol'"
+            return 1
+            ;;
+    esac
 }
 
 # Claim bitcoin after secret reveal
@@ -592,10 +805,21 @@ stop_services() {
     # Stop Hardhat
     if [ -f "$SETUP_DIR/agent/eth/hardhat.pid" ]; then
         local hardhat_pid=\$(cat "$SETUP_DIR/agent/eth/hardhat.pid")
-        if ps -p "\$hardhat_pid" > /dev/null 2>&1; then
-            kill "\$hardhat_pid" && echo "Hardhat stopped"
+        if ps -p "$hardhat_pid" > /dev/null 2>&1; then
+            kill "$hardhat_pid" && echo "Hardhat stopped"
         fi
         rm -f "$SETUP_DIR/agent/eth/hardhat.pid"
+    fi
+
+    # Stop Solana
+    if [ -f "$SETUP_DIR/agent/sol/solana.pid" ]; then
+        local solana_pid=$(cat "$SETUP_DIR/agent/sol/solana.pid")
+        if ps -p "$solana_pid" > /dev/null 2>&1; then
+            kill "$solana_pid" && echo "Solana test validator stopped"
+        fi
+        rm -f "$SETUP_DIR/agent/sol/solana.pid"
+    else
+        pkill -f "solana-test-validator" 2>/dev/null && echo "Solana test validator stopped" || true
     fi
     
     echo "All services stopped"
@@ -643,6 +867,18 @@ verify_setup() {
     else
         warn "Contract address file not found"
     fi
+
+    if solana cluster-version --url http://localhost:8899 &>/dev/null; then
+        log "Solana: Test validator responding"
+    else
+        warn "Solana test validator not responding"
+    fi
+    
+    if [ -f "buyer-keypair.json" ] && [ -f "seller-keypair.json" ]; then
+        log "Solana keypairs: Generated successfully"
+    else
+        warn "Solana keypair files not found"
+    fi
     
     if [ -f "$SETUP_DIR/target/release/crosschain-secret-mint" ] || [ -f "$SETUP_DIR/target/release/client" ]; then
         log "Rust client: Built successfully"
@@ -666,20 +902,19 @@ print_usage_instructions() {
     echo
     echo -e "2. ${YELLOW}Follow the rest of the demo guide${NC}"
     echo
-    echo "   # Start monitoring (optional):"
-    echo "   RUST_LOG=info ./target/release/client -- monitor --eth-key \$BUYER_ETH_PRIVKEY --nft-contract \$NFT_CONTRACT_ADDRESS"
-    echo
-    echo "   # In separate terminals, follow the step-by-step instructions from the buyer's output"
-    echo
     echo -e "${BLUE}Configuration saved to:${NC} atomic_swap.sh"
     echo -e "${BLUE}Setup log saved to:${NC} setup.log"
     echo -e "${BLUE}Bitcoin data directory:${NC} $BITCOIN_DATA_DIR"
     echo
     echo -e "${YELLOW}Services running:${NC}"
-    echo "  • Bitcoin regtest: http://localhost:18443"
-    echo "  • Ethereum (Hardhat): http://localhost:8545"
+    echo "  > Bitcoin regtest: http://localhost:18443"
+    echo "  > Ethereum (Hardhat): http://localhost:8545"
+    echo "  > Solana test validator: http://localhost:8899"
     if [ -f "$SETUP_DIR/agent/eth/contract_address.txt" ]; then
-        echo "  • NFT Contract: $(cat "$SETUP_DIR/agent/eth/contract_address.txt")"
+        echo "   Ethereum NFT contract addr: $(cat "$SETUP_DIR/agent/eth/contract_address.txt")"
+    fi
+    if [ -f "$SETUP_DIR/agent/sol/program_id.txt" ]; then
+        echo "   Solana NFT program ID: $(cat "$SETUP_DIR/agent/sol/program_id.txt")"
     fi
     echo
     echo -e "${YELLOW}To stop services:${NC}"
@@ -687,6 +922,7 @@ print_usage_instructions() {
     echo "  # Or manually:"
     echo "  bitcoin-cli -regtest -datadir=\"$BITCOIN_DATA_DIR\" stop"
     echo "  kill \$(cat agent/eth/hardhat.pid 2>/dev/null) 2>/dev/null || true"
+    echo "  kill \$(cat agent/sol/solana.pid 2>/dev/null) 2>/dev/null || true"
     echo
     echo -e "${YELLOW}Note:${NC} Bitcoin data is stored in project directory: $BITCOIN_DATA_DIR"
 }
