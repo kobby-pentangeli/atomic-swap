@@ -32,10 +32,10 @@ pub fn parse_network(network: &str) -> Result<Network> {
 
 pub fn validate_btc_keypair(key: &str, role: &str) -> Result<Keypair> {
     key.parse::<Keypair>()
-        .with_context(|| format!("Invalid Bitcoin private key for {}", role))
+        .with_context(|| format!("Invalid Bitcoin private key for {role}"))
 }
 
 pub fn validate_btc_pubkey(key: &str, role: &str) -> Result<PublicKey> {
     key.parse::<PublicKey>()
-        .with_context(|| format!("Invalid Bitcoin public key for {}", role))
+        .with_context(|| format!("Invalid Bitcoin public key for {role}"))
 }
