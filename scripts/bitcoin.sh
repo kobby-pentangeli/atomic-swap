@@ -28,7 +28,13 @@ wait_for_bitcoin() {
     local max_attempts=30
     local attempt=1
     
-    log "Waiting for bitcoind to start..."
+    # Use the appropriate RPC host based on environment
+    local rpc_host="localhost"
+    if [ "$IS_DOCKER" = "true" ]; then
+        rpc_host="bitcoin"
+    fi
+    
+    log "Waiting for bitcoind to start on $rpc_host:18443..."
     
     while [ $attempt -le $max_attempts ]; do
         if bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" getnetworkinfo &>/dev/null; then
@@ -45,8 +51,44 @@ wait_for_bitcoin() {
     return 1
 }
 
+setup_bitcoin_wallet() {
+    log "Setting up Bitcoin wallet..."
+    local existing_wallets
+    if existing_wallets=$(bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" listwallets 2>/dev/null); then
+        if ! echo "$existing_wallets" | grep -q "testwallet"; then
+            log "Creating new wallet 'testwallet'..."
+            bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" createwallet "testwallet"
+        else
+            log "Wallet 'testwallet' already exists"
+        fi
+    else
+        warn "Could not list wallets, attempting to create..."
+        bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" createwallet "testwallet" 2>/dev/null || true
+    fi
+    
+    log "Generating initial blocks and funding addresses..."
+    local address
+    if address=$(bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" getnewaddress "initial" 2>/dev/null); then
+        bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" generatetoaddress 101 "$address" > /dev/null
+        log "Generated 101 blocks to address: $address"
+    else
+        error "Failed to generate new address for initial funding"
+    fi
+}
+
 setup_bitcoin() {
     log "Setting up Bitcoin regtest environment..."
+
+    if [ "$IS_DOCKER" = "true" ]; then
+        log "Bitcoin already running in separate container, configuring wallet..."
+        # Wait for Bitcoin to be ready
+        wait_for_bitcoin
+        
+        # Setup wallet and initial funding
+        setup_bitcoin_wallet
+        success "Bitcoin regtest environment ready!"
+        return 0
+    fi
 
     mkdir -p "$BITCOIN_DATA_DIR"
     
@@ -79,29 +121,7 @@ EOF
     bitcoind -regtest -datadir="$BITCOIN_DATA_DIR" -daemon
     
     wait_for_bitcoin
-    
-    log "Setting up Bitcoin wallet..."
-    local existing_wallets
-    if existing_wallets=$(bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" listwallets 2>/dev/null); then
-        if ! echo "$existing_wallets" | grep -q "testwallet"; then
-            log "Creating new wallet 'testwallet'..."
-            bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" createwallet "testwallet"
-        else
-            log "Wallet 'testwallet' already exists"
-        fi
-    else
-        warn "Could not list wallets, attempting to create..."
-        bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" createwallet "testwallet" 2>/dev/null || true
-    fi
-    
-    log "Generating initial blocks and funding addresses..."
-    local address
-    if address=$(bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" getnewaddress "initial" 2>/dev/null); then
-        bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" generatetoaddress 101 "$address" > /dev/null
-        log "Generated 101 blocks to address: $address"
-    else
-        error "Failed to generate new address for initial funding"
-    fi
+    setup_bitcoin_wallet
     
     success "Bitcoin regtest environment ready!"
 }

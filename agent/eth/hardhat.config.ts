@@ -30,6 +30,10 @@ const config: HardhatUserConfig = {
       type: "edr-simulated",
       chainType: "op",
     },
+    localhost: {
+      type: "edr-simulated",
+      chainType: "l1",
+    },
     sepolia: {
       type: "http",
       chainType: "l1",

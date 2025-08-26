@@ -23,6 +23,28 @@ wait_for_ethereum() {
     return 1
 }
 
+deploy_contracts() {
+    log "Deploying NFT contract with Ignition..."
+    npx hardhat ignition deploy ignition/modules/NFTSecretMint.ts --network localhost
+
+    local deployment_file="ignition/deployments/chain-31337/deployed_addresses.json"
+    if [ ! -f "$deployment_file" ]; then
+        error "Deployment artifacts not found! Check hardhat.log for details"
+    fi
+    
+    local contract_address
+    if contract_address=$(jq -r '.["NFTSecretMintModule#NFTSecretMint"]' "$deployment_file" 2>/dev/null); then
+        if [ -z "$contract_address" ] || [ "$contract_address" == "null" ]; then
+            error "Failed to extract contract address from $deployment_file"
+        fi
+    else
+        error "Failed to parse deployment file $deployment_file"
+    fi
+    
+    echo "$contract_address" > contract_address.txt
+    log "Contract deployed at: $contract_address"
+}
+
 setup_ethereum() {
     log "Setting up Ethereum development environment..."
     
@@ -32,6 +54,15 @@ setup_ethereum() {
     fi
     
     cd "$SETUP_DIR/agent/eth"
+
+    if [ "$IS_DOCKER" = "true" ]; then
+        log "Ethereum already running in separate container, deploying contract..."
+        
+        deploy_contracts
+        
+        cd "$SETUP_DIR"
+        return 0
+    fi
     
     log "Installing npm dependencies..."
     npm install --silent
@@ -60,25 +91,7 @@ setup_ethereum() {
 
     wait_for_ethereum
     
-    log "Deploying NFT contract with Ignition..."
-    npx hardhat ignition deploy ignition/modules/NFTSecretMint.ts --network localhost
-
-    local deployment_file="ignition/deployments/chain-31337/deployed_addresses.json"
-    if [ ! -f "$deployment_file" ]; then
-        error "Deployment artifacts not found! Check hardhat.log for details"
-    fi
-    
-    local contract_address
-    if contract_address=$(jq -r '.["NFTSecretMintModule#NFTSecretMint"]' "$deployment_file" 2>/dev/null); then
-        if [ -z "$contract_address" ] || [ "$contract_address" == "null" ]; then
-            error "Failed to extract contract address from $deployment_file"
-        fi
-    else
-        error "Failed to parse deployment file $deployment_file"
-    fi
-    
-    echo "$contract_address" > contract_address.txt
-    log "Contract deployed at: $contract_address"
+    deploy_contracts
     
     cd "$SETUP_DIR"
     success "Ethereum environment ready!"

@@ -31,10 +31,15 @@ RUN cargo install --git https://github.com/solana-foundation/anchor avm --force 
     && avm use latest
 
 # Install Bitcoin Core
-RUN apt-get update && apt-get install -y software-properties-common \
-    && add-apt-repository ppa:bitcoin/bitcoin \
-    && apt-get update \
-    && apt-get install -y bitcoind
+RUN BITCOIN_VERSION=25.0 && \
+    cd /tmp && \
+    wget https://bitcoincore.org/bin/bitcoin-core-${BITCOIN_VERSION}/bitcoin-${BITCOIN_VERSION}-x86_64-linux-gnu.tar.gz && \
+    wget https://bitcoincore.org/bin/bitcoin-core-${BITCOIN_VERSION}/SHA256SUMS && \
+    grep bitcoin-${BITCOIN_VERSION}-x86_64-linux-gnu.tar.gz SHA256SUMS | sha256sum -c - && \
+    tar -xzf bitcoin-${BITCOIN_VERSION}-x86_64-linux-gnu.tar.gz && \
+    install -m 0755 -o root -g root -t /usr/local/bin bitcoin-${BITCOIN_VERSION}/bin/* && \
+    rm -rf bitcoin-${BITCOIN_VERSION}* SHA256SUMS* && \
+    bitcoind --version
 
 # Install jq
 RUN apt-get update && apt-get install -y jq
@@ -53,24 +58,32 @@ COPY Cargo.toml .
 COPY agent/btc/Cargo.toml agent/btc/
 COPY agent/sol/Cargo.toml agent/sol/
 COPY agent/sol/programs/sol-htlc/Cargo.toml agent/sol/programs/sol-htlc/
+COPY agent/sol/tests/Cargo.toml agent/sol/tests/
 COPY client/Cargo.toml client/
 
 # Create dummy source files for initial build caching
 RUN mkdir -p \
     agent/btc/src \
     agent/sol/programs/sol-htlc/src \
+    agent/sol/tests/src \
     client/src \
     client/src/bin \
     && echo 'fn main() {}' > client/src/main.rs \
     && echo 'fn main() {}' > client/src/bin/derive_privkey.rs \
     && echo '' > agent/btc/src/lib.rs \
-    && echo '' > agent/sol/programs/sol-htlc/src/lib.rs
+    && echo '' > agent/sol/programs/sol-htlc/src/lib.rs \
+    && echo '' > agent/sol/tests/src/lib.rs
 
 # Build dependencies only (caching layer)
 RUN cargo build --release --workspace
 
 # Copy the rest of the application
 COPY . .
+
+# Compile Ethereum contracts to generate artifacts
+WORKDIR /app/agent/eth
+RUN npx hardhat compile
+WORKDIR /app
 
 # Build the actual application
 RUN cargo build --release --workspace

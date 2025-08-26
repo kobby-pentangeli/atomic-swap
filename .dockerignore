@@ -1,0 +1,13 @@
+.anchor
+.git
+.gitignore
+**/target
+**/node_modules
+.bitcoin
+.solana-ledger
+*.log
+**/Cargo.lock
+**/package-lock.json
+Dockerfile
+docker-compose.yml
+.dockerignore

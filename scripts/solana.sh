@@ -5,9 +5,15 @@ wait_for_solana() {
     local attempt=1
     
     log "Waiting for Solana test validator to start..."
+
+    # Use the appropriate RPC URL based on environment
+    local rpc_url="http://localhost:8899"
+    if [ "$IS_DOCKER" = "true" ]; then
+        rpc_url="http://solana:8899"
+    fi
     
     while [ $attempt -le $max_attempts ]; do
-        if solana cluster-version --url http://localhost:8899 &>/dev/null; then
+        if solana cluster-version --url "$rpc_url" &>/dev/null; then
             success "Solana test validator is ready!"
             return 0
         fi
@@ -23,49 +29,54 @@ wait_for_solana() {
 
 setup_solana() {
     log "Setting up Solana development environment..."
-    
-    if ! command -v solana &> /dev/null; then
-        warn "Solana CLI not found. Installing..."
-        
-        log "Downloading and installing Solana CLI..."
-        sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
-        export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"
-        
+
+    if [ "$IS_DOCKER" = "true" ]; then
+        log "Solana test validator running in separate container"
+        log "Waiting for Solana validator to be ready..."
+        wait_for_solana
+    else
         if ! command -v solana &> /dev/null; then
-            error "Failed to install Solana CLI. Please install manually: https://solana.com/docs/intro/installation#install-the-solana-cli"
+            warn "Solana CLI not found. Installing..."
+            
+            log "Downloading and installing Solana CLI..."
+            sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
+            export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"
+            
+            if ! command -v solana &> /dev/null; then
+                error "Failed to install Solana CLI. Please install manually: https://solana.com/docs/intro/installation#install-the-solana-cli"
+            fi
         fi
-    fi
-    
-    if ! command -v anchor &> /dev/null; then
-        warn "Anchor framework not found. Installing..."
-        
-        log "Installing Anchor..."
-        cargo install --git https://github.com/solana-foundation/anchor avm --force && avm install latest && avm use latest
         
         if ! command -v anchor &> /dev/null; then
-            error "Failed to install Anchor. Please install manually: https://solana.com/docs/intro/installation#install-anchor-cli"
+            warn "Anchor framework not found. Installing..."
+            
+            log "Installing Anchor..."
+            cargo install --git https://github.com/solana-foundation/anchor avm --force && avm install latest && avm use latest
+            
+            if ! command -v anchor &> /dev/null; then
+                error "Failed to install Anchor. Please install manually: https://solana.com/docs/intro/installation#install-anchor-cli"
+            fi
         fi
+        
+        log "Starting Solana test validator..."
+        pkill -f "solana-test-validator" 2>/dev/null || true
+        sleep 2
+
+        solana-test-validator \
+            --reset \
+            --rpc-port 8899 \
+            --ledger .solana-ledger \
+            --log \
+            --clone metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s \
+            --clone-upgradeable-program metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s \
+            --url https://api.mainnet-beta.solana.com \
+            > solana.log 2>&1 &
+        
+        local solana_pid=$!
+        echo "$solana_pid" > $SETUP_DIR/agent/sol/solana.pid
+        
+        wait_for_solana
     fi
-    
-    log "Starting Solana test validator..."
-
-    pkill -f "solana-test-validator" 2>/dev/null || true
-    sleep 2
-
-    solana-test-validator \
-        --reset \
-        --rpc-port 8899 \
-        --ledger .solana-ledger \
-        --log \
-        --clone metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s \
-        --clone-upgradeable-program metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s \
-        --url https://api.mainnet-beta.solana.com \
-        > solana.log 2>&1 &
-    
-    local solana_pid=$!
-    echo "$solana_pid" > $SETUP_DIR/agent/sol/solana.pid
-    
-    wait_for_solana
     
     log "Generating Solana keypairs..."
     
