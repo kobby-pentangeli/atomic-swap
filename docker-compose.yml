@@ -1,0 +1,118 @@
+services:
+  bitcoin:
+    build: .
+    container_name: xchain-btc
+    command: >
+      sh -c "mkdir -p /app/.bitcoin &&
+      echo 'Creating Bitcoin configuration...' &&
+      cat > /app/.bitcoin/bitcoin.conf << 'EOF'
+      server=1
+      rest=1
+      txindex=1
+      fallbackfee=0.0001
+      debug=1
+      logips=1
+      dbcache=300
+      maxmempool=50
+      daemon=1
+      [regtest]
+      rpcuser=user
+      rpcpassword=password
+      rpcport=18443
+      rpcbind=0.0.0.0
+      rpcallowip=0.0.0.0/0
+      port=18444
+      listen=1
+      discover=0
+      EOF
+      && bitcoind -regtest -datadir=/app/.bitcoin -conf=/app/.bitcoin/bitcoin.conf -daemon &&
+      tail -f /app/.bitcoin/regtest/debug.log"
+    ports:
+      - "18443:18443"
+      - "18444:18444"
+    volumes:
+      - bitcoin-data:/app/.bitcoin
+    networks:
+      - xchain-network
+
+  ethereum:
+    build: .
+    container_name: xchain-eth
+    working_dir: /app/agent/eth
+    command: >
+      sh -c "npm install --silent &&
+      npx hardhat compile &&
+      npx hardhat node --hostname 0.0.0.0 --port 8545"
+    ports:
+      - "8545:8545"
+    volumes:
+      - eth-artifacts:/app/agent/eth/artifacts
+      - eth-deployments:/app/agent/eth/ignition/deployments
+    depends_on:
+      - bitcoin
+    networks:
+      - xchain-network
+    environment:
+      - HARDHAT_NETWORK=localhost
+
+  solana:
+    build: .
+    container_name: xchain-sol
+    command: >
+      sh -c "solana-test-validator 
+      --rpc-port 8899 
+      --rpc-bind-address 0.0.0.0 
+      --ledger /app/.solana-ledger 
+      --log
+      --clone metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s
+      --clone-upgradeable-program metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s
+      --url https://api.mainnet-beta.solana.com"
+    ports:
+      - "8899:8899"
+      - "8900:8900"
+    volumes:
+      - solana-data:/app/.solana-ledger
+    depends_on:
+      - ethereum
+    networks:
+      - xchain-network
+
+  app:
+    build: .
+    container_name: xchain-app
+    command: >
+      sh -c "./scripts/wait-for-services.sh &&
+      ./setup.sh"
+    volumes:
+      - .:/app
+      - bitcoin-data:/app/.bitcoin
+      - eth-artifacts:/app/agent/eth/artifacts
+      - eth-deployments:/app/agent/eth/ignition/deployments
+      - solana-data:/app/.solana-ledger
+    ports:
+      - "18443:18443"
+      - "18444:18444"
+      - "8545:8545"
+      - "8899:8899"
+      - "8900:8900"
+    depends_on:
+      - bitcoin
+      - ethereum
+      - solana
+    networks:
+      - xchain-network
+    environment:
+      - IS_DOCKER=true
+      - BTC_RPC_URL=http://bitcoin:18443
+      - ETH_RPC_URL=http://ethereum:8545
+      - SOL_RPC_URL=http://solana:8899
+
+volumes:
+  bitcoin-data:
+  eth-artifacts:
+  eth-deployments:
+  solana-data:
+
+networks:
+  xchain-network:
+    driver: bridge

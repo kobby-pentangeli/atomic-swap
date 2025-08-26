@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
     libudev-dev \
+    netcat-openbsd \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Node.js 22
