@@ -50,8 +50,11 @@ WORKDIR /app
 COPY agent/eth/package.json agent/eth/package-lock.json* ./agent/eth/
 COPY agent/sol/package.json agent/sol/package-lock.json* ./agent/sol/
 
-RUN cd agent/eth && npm install --silent
-RUN cd agent/sol && npm install --silent
+# Add esbuild Linux binary explicitly
+RUN npm install --global esbuild@0.25.9
+
+RUN cd agent/eth && rm -rf node_modules && npm install --silent
+RUN cd agent/sol && rm -rf node_modules && npm install --silent
 
 # Copy Rust manifests for dependency resolution
 COPY Cargo.toml .
@@ -88,11 +91,11 @@ WORKDIR /app
 # Build the actual application
 RUN cargo build --release --workspace
 
-# Make scripts executable
-RUN chmod +x scripts/*.sh && chmod +x setup.sh
+# Make script executable
+RUN chmod +x docker-setup.sh
 
 # Expose ports
 EXPOSE 18443 18444 8545 8899 8900
 
 # Default command
-CMD ["./setup.sh"]
+CMD ["./docker-setup.sh"]
