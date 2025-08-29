@@ -2,6 +2,7 @@ FROM ubuntu:22.04
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
+    bzip2 \
     curl \
     wget \
     git \
@@ -80,6 +81,9 @@ RUN mkdir -p \
 # Build dependencies only (caching layer)
 RUN cargo build --release --workspace
 
+# Copy starter script for Solana test validator
+COPY scripts/start-solana.sh .
+RUN chmod +x start-solana.sh
 # Copy the rest of the application
 COPY . .
 

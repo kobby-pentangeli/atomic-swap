@@ -57,11 +57,7 @@ services:
     build: .
     platform: linux/amd64
     container_name: xchain-sol
-    command: >
-      bash -c "
-        export PATH="/root/.local/share/solana/install/active_release/bin:\$PATH" &&
-        solana-test-validator --reset --rpc-port 8899 --bind-address 0.0.0.0 --ledger /app/.solana-ledger --log --clone metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s --clone-upgradeable-program metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s --url https://api.mainnet-beta.solana.com
-      "
+    command: start-solana.sh
     ports:
       - "8899:8899"
       - "8900:8900"
@@ -71,8 +67,8 @@ services:
       - xchain-network
     healthcheck:
       test: ["CMD", "nc", "-z", "localhost", "8899"]
-      interval: 10s
-      timeout: 5s
+      interval: 15s
+      timeout: 10s
       retries: 30
 
   app:

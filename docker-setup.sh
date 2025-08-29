@@ -78,22 +78,22 @@ wait_for_ethereum() {
     return 1
 }
 
-# wait_for_solana() {
-#     local max_attempts=30
-#     local attempt=1
-#     log "Waiting for Solana test validator to start..."
-#     while [ $attempt -le $max_attempts ]; do
-#         if solana cluster-version --url http://solana:8899 &>/dev/null; then
-#             success "Solana test validator is ready!"
-#             return 0
-#         fi
-#         echo -n "."
-#         sleep 2
-#         ((attempt++))
-#     done
-#     error "Solana test validator failed to start within $((max_attempts * 2)) seconds"
-#     return 1
-# }
+wait_for_solana() {
+    local max_attempts=30
+    local attempt=1
+    log "Waiting for Solana test validator to start..."
+    while [ $attempt -le $max_attempts ]; do
+        if solana cluster-version --url http://solana:8899 &>/dev/null; then
+            success "Solana test validator is ready!"
+            return 0
+        fi
+        echo -n "."
+        sleep 2
+        ((attempt++))
+    done
+    error "Solana test validator failed to start within $((max_attempts * 2)) seconds"
+    return 1
+}
 
 setup_bitcoin() {
     log "Setting up Bitcoin wallet..."
@@ -161,8 +161,8 @@ setup_solana() {
     local seller_pubkey=$(solana-keygen pubkey $SETUP_DIR/seller-keypair.json)
     
     log "Funding Solana accounts..."
-    solana airdrop 10 "$buyer_pubkey" --url http://solana:8899 --commitment confirmed --timeout 30
-    solana airdrop 10 "$seller_pubkey" --url http://solana:8899 --commitment confirmed --timeout 30
+    solana airdrop 10 "$buyer_pubkey" --url http://solana:8899
+    solana airdrop 10 "$seller_pubkey" --url http://solana:8899
     
     log "Buyer Solana address: $buyer_pubkey"
     log "Seller Solana address: $seller_pubkey"
@@ -636,7 +636,7 @@ main() {
 
     wait_for_bitcoin
     wait_for_ethereum
-    # wait_for_solana
+    wait_for_solana
 
     setup_bitcoin
     setup_ethereum
