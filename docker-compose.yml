@@ -1,7 +1,7 @@
 services:
   bitcoin:
     build: .
-    platform: linux/amd64
+    # platform: linux/amd64
     container_name: xchain-btc
     command: >
       bitcoind -regtest 
@@ -30,7 +30,7 @@ services:
 
   ethereum:
     build: .
-    platform: linux/amd64
+    # platform: linux/amd64
     container_name: xchain-eth
     working_dir: /app/agent/eth
     command: >
@@ -55,9 +55,9 @@ services:
 
   solana:
     build: .
-    platform: linux/amd64
+    # platform: linux/amd64
     container_name: xchain-sol
-    command: start-solana.sh
+    command: /app/start-solana.sh
     ports:
       - "8899:8899"
       - "8900:8900"
@@ -66,16 +66,21 @@ services:
     networks:
       - xchain-network
     healthcheck:
-      test: ["CMD", "nc", "-z", "localhost", "8899"]
-      interval: 15s
-      timeout: 10s
-      retries: 30
+      test:
+        [
+          "CMD-SHELL",
+          "timeout 5 solana cluster-version --url http://localhost:8899 || exit 1",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
 
   app:
     build:
       context: .
       dockerfile: Dockerfile
-    platform: linux/amd64
+    # platform: linux/amd64
     container_name: xchain-app
     command: >
       bash -c "./docker-setup.sh"

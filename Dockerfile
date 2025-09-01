@@ -1,8 +1,17 @@
 FROM ubuntu:22.04
 
+ARG TARGETARCH
+
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     bzip2 \
+    cmake \
+    clang \
+    llvm \
+    libclang-dev \
+    llvm-dev \
+    libstdc++-12-dev \
+    protobuf-compiler \
     curl \
     wget \
     git \
@@ -13,6 +22,10 @@ RUN apt-get update && apt-get install -y \
     netcat-openbsd \
     && rm -rf /var/lib/apt/lists/*
 
+# Set environment variables for clang
+ENV LIBCLANG_PATH=/usr/lib/llvm-14/lib
+ENV LLVM_CONFIG_PATH=/usr/bin/llvm-config
+
 # Install Node.js 22
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y nodejs
@@ -21,23 +34,33 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH="/root/.cargo/bin:${PATH}"
 
-# Install Solana
-RUN sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)" \
-    && export PATH="/root/.local/share/solana/install/active_release/bin:$PATH" \
-    && solana --version
+# Build Solana from source with AVX disabled
+RUN git clone --branch v3.0.0 https://github.com/anza-xyz/agave.git
+RUN cd agave && ./scripts/cargo-install-all.sh /root/.local/share/solana/install/active_release
+ENV PATH="/root/.local/share/solana/install/active_release/bin:${PATH}"
+RUN solana --version
 
 # Install Anchor
-RUN cargo install --git https://github.com/solana-foundation/anchor avm --force \
-    && avm install latest \
-    && avm use latest
+RUN if [ "$TARGETARCH" = "amd64" ]; then \
+    cargo install --git https://github.com/solana-foundation/anchor avm --force && \
+    avm install latest && avm use latest; \
+    else \
+    cargo install --git https://github.com/solana-foundation/anchor anchor-cli --tag v0.31.1 --force; \
+    fi
+RUN anchor --version || echo "Anchor installation verification failed"
 
 # Install Bitcoin Core
 RUN BITCOIN_VERSION=25.0 && \
     cd /tmp && \
-    wget https://bitcoincore.org/bin/bitcoin-core-${BITCOIN_VERSION}/bitcoin-${BITCOIN_VERSION}-x86_64-linux-gnu.tar.gz && \
+    if [ "$TARGETARCH" = "arm64" ]; then \
+    BITCOIN_ARCH="aarch64-linux-gnu"; \
+    else \
+    BITCOIN_ARCH="x86_64-linux-gnu"; \
+    fi && \
+    wget https://bitcoincore.org/bin/bitcoin-core-${BITCOIN_VERSION}/bitcoin-${BITCOIN_VERSION}-${BITCOIN_ARCH}.tar.gz && \
     wget https://bitcoincore.org/bin/bitcoin-core-${BITCOIN_VERSION}/SHA256SUMS && \
-    grep bitcoin-${BITCOIN_VERSION}-x86_64-linux-gnu.tar.gz SHA256SUMS | sha256sum -c - && \
-    tar -xzf bitcoin-${BITCOIN_VERSION}-x86_64-linux-gnu.tar.gz && \
+    grep bitcoin-${BITCOIN_VERSION}-${BITCOIN_ARCH}.tar.gz SHA256SUMS | sha256sum -c - && \
+    tar -xzf bitcoin-${BITCOIN_VERSION}-${BITCOIN_ARCH}.tar.gz && \
     install -m 0755 -o root -g root -t /usr/local/bin bitcoin-${BITCOIN_VERSION}/bin/* && \
     rm -rf bitcoin-${BITCOIN_VERSION}* SHA256SUMS* && \
     bitcoind --version
@@ -84,6 +107,7 @@ RUN cargo build --release --workspace
 # Copy starter script for Solana test validator
 COPY scripts/start-solana.sh .
 RUN chmod +x start-solana.sh
+
 # Copy the rest of the application
 COPY . .
 

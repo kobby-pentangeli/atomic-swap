@@ -79,19 +79,53 @@ wait_for_ethereum() {
 }
 
 wait_for_solana() {
-    local max_attempts=30
+    local max_attempts=60
     local attempt=1
     log "Waiting for Solana test validator to start..."
-    while [ $attempt -le $max_attempts ]; do
-        if solana cluster-version --url http://solana:8899 &>/dev/null; then
-            success "Solana test validator is ready!"
-            return 0
+    
+    while [ $attempt -le 10 ]; do
+        if nc -z solana 8899 2>/dev/null; then
+            log "Solana port 8899 is open"
+            break
         fi
         echo -n "."
         sleep 2
         ((attempt++))
     done
-    error "Solana test validator failed to start within $((max_attempts * 2)) seconds"
+    
+    attempt=1
+    while [ $attempt -le $max_attempts ]; do
+        if curl -s -X POST http://solana:8899 \
+            -H "Content-Type: application/json" \
+            -d '{"jsonrpc":"2.0","id":1,"method":"getVersion"}' 2>/dev/null | grep -q "result"; then
+            success "Solana RPC is responding!"
+            
+            sleep 5
+            
+            if solana cluster-version --url http://solana:8899 2>/dev/null; then
+                success "Solana test validator is fully ready!"
+                return 0
+            fi
+        fi
+        
+        if curl -s http://solana:8899/health 2>/dev/null | grep -q "ok"; then
+            log "Solana health check passed"
+            sleep 3
+            if solana cluster-version --url http://solana:8899 2>/dev/null; then
+                success "Solana test validator is ready!"
+                return 0
+            fi
+        fi
+        
+        echo -n "."
+        sleep 3
+        ((attempt++))
+    done
+    
+    log "Debug: Attempting direct curl to Solana RPC..."
+    curl -v http://solana:8899 2>&1 | head -20
+    
+    error "Solana test validator failed to start within $((max_attempts * 3)) seconds"
     return 1
 }
 
