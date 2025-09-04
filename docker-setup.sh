@@ -181,8 +181,14 @@ setup_solana() {
     # Ensure Solana tools are available
     export PATH="/root/.local/share/solana/install/active_release/bin:$PATH"
 
+    DEFAULT_SIGNER="/root/.config/solana/id.json"
+
     log "Generating Solana keypairs..."
-    
+
+    if [ ! -f "$DEFAULT_SIGNER" ]; then
+        solana-keygen new --no-bip39-passphrase --silent --outfile $DEFAULT_SIGNER
+    fi
+
     if [ ! -f "$SETUP_DIR/buyer-keypair.json" ]; then
         solana-keygen new --no-bip39-passphrase --silent --outfile $SETUP_DIR/buyer-keypair.json
     fi
@@ -191,10 +197,12 @@ setup_solana() {
         solana-keygen new --no-bip39-passphrase --silent --outfile $SETUP_DIR/seller-keypair.json
     fi
     
+    local default_signer=$(solana-keygen pubkey $DEFAULT_SIGNER)
     local buyer_pubkey=$(solana-keygen pubkey $SETUP_DIR/buyer-keypair.json)
     local seller_pubkey=$(solana-keygen pubkey $SETUP_DIR/seller-keypair.json)
     
     log "Funding Solana accounts..."
+    solana airdrop 20 "$default_signer" --url http://solana:8899
     solana airdrop 10 "$buyer_pubkey" --url http://solana:8899
     solana airdrop 10 "$seller_pubkey" --url http://solana:8899
     
@@ -247,7 +255,15 @@ generate_test_accounts() {
     # Build the xpriv derivation binary if needed
     if [ ! -f "$SETUP_DIR/target/release/derive_privkey" ]; then
         log "Building key derivation helper..."
-        cargo build --release --bin derive_privkey
+        if ! cargo build --release --bin derive_privkey; then
+            error "Failed to build derive_privkey binary"
+            return 1
+        fi
+    fi
+
+    if [ ! -x "$SETUP_DIR/target/release/derive_privkey" ]; then
+        error "derive_privkey binary not found or not executable at $SETUP_DIR/target/release/derive_privkey"
+        return 1
     fi
 
     local buyer_btc_address seller_btc_address
@@ -290,8 +306,8 @@ generate_test_accounts() {
                     base_xpriv=$(echo "$desc" | grep -oE 'tprv[a-zA-Z0-9]+')
                 fi
                 
-                if [[ -z "$base_xprv" ]]; then
-                    base_xprv=$(echo "$desc" | sed -n 's/.*]\([^/]*\)\/.*/\1/p')
+                if [[ -z "$base_xpriv" ]]; then
+                    base_xpriv=$(echo "$desc" | sed -n 's/.*]\([^/]*\)\/.*/\1/p')
                 fi
                 
                 if [[ -n "$base_xpriv" && -n "$hdkeypath" ]]; then

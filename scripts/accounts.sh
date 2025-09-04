@@ -50,8 +50,8 @@ generate_test_accounts() {
                     base_xpriv=$(echo "$desc" | grep -oE 'tprv[a-zA-Z0-9]+')
                 fi
                 
-                if [[ -z "$base_xprv" ]]; then
-                    base_xprv=$(echo "$desc" | sed -n 's/.*]\([^/]*\)\/.*/\1/p')
+                if [[ -z "$base_xpriv" ]]; then
+                    base_xpriv=$(echo "$desc" | sed -n 's/.*]\([^/]*\)\/.*/\1/p')
                 fi
                 
                 if [[ -n "$base_xpriv" && -n "$hdkeypath" ]]; then

@@ -1,7 +1,6 @@
 services:
   bitcoin:
     build: .
-    # platform: linux/amd64
     container_name: xchain-btc
     command: >
       bitcoind -regtest 
@@ -30,7 +29,6 @@ services:
 
   ethereum:
     build: .
-    # platform: linux/amd64
     container_name: xchain-eth
     working_dir: /app/agent/eth
     command: >
@@ -55,7 +53,6 @@ services:
 
   solana:
     build: .
-    # platform: linux/amd64
     container_name: xchain-sol
     command: /app/start-solana.sh
     ports:
@@ -80,7 +77,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    # platform: linux/amd64
     container_name: xchain-app
     command: >
       bash -c "./docker-setup.sh"
