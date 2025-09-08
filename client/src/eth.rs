@@ -25,7 +25,6 @@ const CANCEL_COMMITMENT: &str = "cancelCommitment";
 const GET_COMMITMENT: &str = "getCommitment";
 const IS_COMMITMENT_VALID: &str = "isCommitmentValid";
 const CAN_MINT_NOW: &str = "canMintNow";
-const HASH_TO_TOKEN_ID: &str = "hashToTokenId";
 
 pub struct EthClient {
     provider: Provider<Http>,
@@ -77,11 +76,8 @@ impl EthClient {
         buyer: Option<Address>,
         metadata_uri: String,
     ) -> Result<H256> {
-        if self.is_token_committed(token_id).await? {
-            return Err(anyhow!("Token already has an active commitment"));
-        }
-        if self.is_hash_used(secret_hash).await? {
-            return Err(anyhow!("Secret hash has already been used"));
+        if self.get_commitment(token_id).await.is_ok() {
+            return Err(anyhow!("Commitment already exists for this token ID"));
         }
 
         let buyer_addr = buyer.unwrap_or(Address::zero());
@@ -239,25 +235,5 @@ impl EthClient {
 
     pub fn get_address(&self) -> Address {
         self.wallet.address()
-    }
-
-    /// Check if a token already has an active commitment
-    async fn is_token_committed(&self, token_id: U256) -> Result<bool> {
-        let commitment = self.get_commitment(token_id).await?;
-        Ok(commitment.is_active)
-    }
-
-    /// Check if a secret hash has already been used
-    async fn is_hash_used(&self, secret_hash: H256) -> Result<bool> {
-        // Query the hashToTokenId mapping
-        let token_id: U256 = self
-            .contract
-            .method(HASH_TO_TOKEN_ID, secret_hash)?
-            .call()
-            .await
-            .context("Failed to check hash usage")?;
-
-        // If token_id is 0, hash hasn't been used
-        Ok(token_id != U256::zero())
     }
 }

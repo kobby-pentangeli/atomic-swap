@@ -79,7 +79,7 @@ services:
       dockerfile: Dockerfile
     container_name: xchain-app
     command: >
-      bash -c "./docker-setup.sh"
+      bash -c "./docker-setup.sh && echo 'Setup complete! Container ready for demo.' && tail -f /dev/null"
     volumes:
       - bitcoin-data:/app/.bitcoin
       - eth-artifacts:/app/agent/eth/artifacts

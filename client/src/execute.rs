@@ -65,7 +65,7 @@ pub fn lock_bitcoin(args: LockBtcArgs) -> Result<()> {
         "Bitcoin funds locked successfully"
     );
 
-    info!("Waiting for seller NFT commitment on Ethereum");
+    info!("Waiting for seller NFT commitment");
 
     // We log this for the demo
     info!("SECRET (hex): {}", hex::encode(secret_bytes));
