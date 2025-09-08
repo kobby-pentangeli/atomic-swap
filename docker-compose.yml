@@ -81,7 +81,6 @@ services:
     command: >
       bash -c "./docker-setup.sh"
     volumes:
-      - .:/app
       - bitcoin-data:/app/.bitcoin
       - eth-artifacts:/app/agent/eth/artifacts
       - eth-deployments:/app/agent/eth/ignition/deployments

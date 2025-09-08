@@ -253,17 +253,26 @@ generate_test_accounts() {
     log "Generating Bitcoin test accounts..."
 
     # Build the xpriv derivation binary if needed
-    if [ ! -f "$SETUP_DIR/target/release/derive_privkey" ]; then
+    local derive_binary="$SETUP_DIR/target/release/derive_privkey"
+    
+    if [ ! -f "$derive_binary" ]; then
         log "Building key derivation helper..."
-        if ! cargo build --release --bin derive_privkey; then
+        cd "$SETUP_DIR"
+        if ! cargo build --release --bin derive_privkey 2>&1 | tee -a "$LOG_FILE"; then
             error "Failed to build derive_privkey binary"
             return 1
         fi
     fi
 
-    if [ ! -x "$SETUP_DIR/target/release/derive_privkey" ]; then
-        error "derive_privkey binary not found or not executable at $SETUP_DIR/target/release/derive_privkey"
-        return 1
+    if [ ! -x "$derive_binary" ]; then
+        log "Making derive_privkey binary executable..."
+        chmod +x "$derive_binary" || error "Failed to make derive_privkey executable"
+    fi
+    
+    # Test the binary works
+    log "Testing derive_privkey binary..."
+    if "$derive_binary" 2>/dev/null; then
+        log "derive_privkey binary shows expected usage message"
     fi
 
     local buyer_btc_address seller_btc_address
@@ -298,6 +307,7 @@ generate_test_accounts() {
             local desc=$(echo "$descriptors" | jq -r --arg prefix "$path_prefix" '.descriptors[] | select(.desc | contains($prefix)) | select(.desc | test("/0/\\*")) | .desc' | head -1)
             
             if [[ -n "$desc" ]]; then
+                log "Found descriptor for buyer: $desc"
                 local base_xpriv=""
                 
                 base_xpriv=$(echo "$desc" | sed -n 's/.*(\[.*\]\([a-zA-Z0-9]*\)\/.*/\1/p')
@@ -310,17 +320,21 @@ generate_test_accounts() {
                     base_xpriv=$(echo "$desc" | sed -n 's/.*]\([^/]*\)\/.*/\1/p')
                 fi
                 
+                log "Extracted base_xpriv: ${base_xpriv:0:10}... hdkeypath: $hdkeypath"
+                
                 if [[ -n "$base_xpriv" && -n "$hdkeypath" ]]; then
-                    if buyer_btc_privkey=$("$SETUP_DIR/target/release/derive_privkey" "$base_xpriv" "$hdkeypath" 2>&1); then
-                        echo "Buyer private key derived successfully"
+                    log "Attempting to derive buyer private key..."
+                    if buyer_btc_privkey=$("$derive_binary" "$base_xpriv" "$hdkeypath" 2>&1); then
+                        log "Buyer private key derived successfully"
                     else
+                        log "derive_privkey output: $buyer_btc_privkey"
                         error "Failed to derive buyer private key"
                     fi
                 else
                     error "Failed to extract xpriv ($base_xpriv) or hdkeypath ($hdkeypath) for buyer"
                 fi
             else
-                error "Failed to find appropriate descriptor for buyer"
+                error "Failed to find appropriate descriptor for buyer. Available descriptors: $(echo "$descriptors" | jq -c '.descriptors[].desc')"
             fi
         else
             error "Failed to get buyer address info"
@@ -351,6 +365,7 @@ generate_test_accounts() {
             local desc=$(echo "$descriptors" | jq -r --arg prefix "$path_prefix" '.descriptors[] | select(.desc | contains($prefix)) | select(.desc | test("/0/\\*")) | .desc' | head -1)
             
             if [[ -n "$desc" ]]; then
+                log "Found descriptor for seller: $desc"
                 local base_xpriv=""
                 base_xpriv=$(echo "$desc" | grep -oE 'tprv[a-zA-Z0-9]+')
                 
@@ -358,17 +373,21 @@ generate_test_accounts() {
                     base_xpriv=$(echo "$desc" | sed -n 's/.*(\([^)]*\)).*/\1/p' | grep -oE 'tprv[a-zA-Z0-9]+')
                 fi
                 
+                log "Extracted base_xpriv: ${base_xpriv:0:10}... hdkeypath: $hdkeypath"
+                
                 if [[ -n "$base_xpriv" && -n "$hdkeypath" ]]; then
-                    if seller_btc_privkey=$("$SETUP_DIR/target/release/derive_privkey" "$base_xpriv" "$hdkeypath" 2>&1); then
-                        echo "Seller private key derived successfully"
+                    log "Attempting to derive seller private key..."
+                    if seller_btc_privkey=$("$derive_binary" "$base_xpriv" "$hdkeypath" 2>&1); then
+                        log "Seller private key derived successfully"
                     else
+                        log "derive_privkey output: $seller_btc_privkey"
                         error "Failed to derive seller private key"
                     fi
                 else
                     error "Failed to extract xpriv ($base_xpriv) or hdkeypath ($hdkeypath) for seller"
                 fi
             else
-                error "Failed to find appropriate descriptor for seller"
+                error "Failed to find appropriate descriptor for seller. Available descriptors: $(echo "$descriptors" | jq -c '.descriptors[].desc')"
             fi
         else
             error "Failed to get seller address info"

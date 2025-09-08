@@ -88,12 +88,11 @@ COPY agent/sol/programs/sol-htlc/Cargo.toml agent/sol/programs/sol-htlc/
 COPY agent/sol/tests/Cargo.toml agent/sol/tests/
 COPY client/Cargo.toml client/
 
-# Create dummy source files for initial build caching
+# Create minimal dummy source files for dependency caching
 RUN mkdir -p \
     agent/btc/src \
     agent/sol/programs/sol-htlc/src \
     agent/sol/tests/src \
-    client/src \
     client/src/bin \
     && echo 'fn main() {}' > client/src/main.rs \
     && echo 'fn main() {}' > client/src/bin/derive_privkey.rs \
@@ -103,6 +102,9 @@ RUN mkdir -p \
 
 # Build dependencies only (caching layer)
 RUN cargo build --release --workspace
+
+# Remove dummy files to avoid conflicts
+RUN rm -rf client/src agent/btc/src agent/sol/programs/sol-htlc/src agent/sol/tests/src
 
 # Copy starter script for Solana test validator
 COPY scripts/start-solana.sh .
