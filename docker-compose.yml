@@ -1,0 +1,110 @@
+services:
+  bitcoin:
+    build: .
+    container_name: xchain-btc
+    command: >
+      bitcoind -regtest 
+      -server=1 
+      -rpcallowip=0.0.0.0/0 
+      -rpcbind=0.0.0.0:18443 
+      -rpcuser=user 
+      -rpcpassword=password 
+      -fallbackfee=0.0001 
+      -txindex=1 
+      -blockfilterindex=1 
+      -peerbloomfilters=1 
+      -printtoconsole
+    ports:
+      - "18443:18443"
+      - "18444:18444"
+    volumes:
+      - bitcoin-data:/app/.bitcoin
+    networks:
+      - xchain-network
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "18443"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  ethereum:
+    build: .
+    container_name: xchain-eth
+    working_dir: /app/agent/eth
+    command: >
+      bash -c "
+        rm -rf node_modules &&
+        npm install --silent &&
+        npx hardhat compile &&
+        npx hardhat node --hostname 0.0.0.0 --port 8545
+      "
+    ports:
+      - "8545:8545"
+    volumes:
+      - eth-artifacts:/app/agent/eth/artifacts
+      - eth-deployments:/app/agent/eth/ignition/deployments
+    networks:
+      - xchain-network
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "8545"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  solana:
+    build: .
+    container_name: xchain-sol
+    command: /app/start-solana.sh
+    ports:
+      - "8899:8899"
+      - "8900:8900"
+    volumes:
+      - solana-data:/app/.solana-ledger
+    networks:
+      - xchain-network
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "timeout 5 solana cluster-version --url http://localhost:8899 || exit 1",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: xchain-app
+    command: >
+      bash -c "./docker-setup.sh && echo 'Setup complete! Container ready for demo.' && tail -f /dev/null"
+    volumes:
+      - bitcoin-data:/app/.bitcoin
+      - eth-artifacts:/app/agent/eth/artifacts
+      - eth-deployments:/app/agent/eth/ignition/deployments
+      - solana-data:/app/.solana-ledger
+    depends_on:
+      bitcoin:
+        condition: service_healthy
+      ethereum:
+        condition: service_healthy
+      solana:
+        condition: service_started
+    networks:
+      - xchain-network
+    environment:
+      - BTC_RPC_URL=http://bitcoin:18443
+      - ETH_RPC_URL=http://ethereum:8545
+      - SOL_RPC_URL=http://solana:8899
+
+volumes:
+  bitcoin-data:
+  eth-artifacts:
+  eth-deployments:
+  solana-data:
+
+networks:
+  xchain-network:
+    driver: bridge

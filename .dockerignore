@@ -1,0 +1,38 @@
+# Version control
+.git
+.gitignore
+
+# Build artifacts
+**/target/debug
+**/target/doc
+**/target/.rustc_info.json
+**/target/CACHEDIR.TAG
+**/node_modules
+*.log
+
+# Development files
+.DS_Store
+Thumbs.db
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Blockchain data directories
+.bitcoin
+.solana-ledger
+.anchor
+
+# Docker files
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Temporary and cache files
+.env
+.env.local
+**/dist
+**/build
+**/.cache
+**/coverage
