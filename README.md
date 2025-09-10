@@ -45,8 +45,8 @@ Installing Docker Desktop automically gives Docker Compose as well. [Install her
 
 ```bash
 # Clone repo
-git clone https://github.com/kobby-pentangeli/crosschain-secret-mint.git
-cd crosschain-secret-mint
+git clone https://github.com/kobby-pentangeli/atomic-swap.git
+cd atomic-swap
 
 # Start all services (Bitcoin, Ethereum, Solana, and app)
 docker-compose up --build
@@ -140,8 +140,8 @@ sudo apt-get install bitcoind
 brew install bitcoin
 
 # Clone repo
-git clone https://github.com/kobby-pentangeli/crosschain-secret-mint.git
-cd crosschain-secret-mint
+git clone https://github.com/kobby-pentangeli/atomic-swap.git
+cd atomic-swap
 
 # Set up the demo parameters and runners
 ./setup.sh
@@ -226,9 +226,9 @@ docker exec -it xchain-sol solana cluster-version --url http://localhost:8899
 
 Thank you for considering contributing to this project! All contributions large and small are actively accepted.
 
-- To get started, please read the [contribution guidelines](https://github.com/kobby-pentangeli/crosschain-secret-mint/blob/main/CONTRIBUTING.md).
+- To get started, please read the [contribution guidelines](https://github.com/kobby-pentangeli/atomic-swap/blob/main/CONTRIBUTING.md).
 
-- Browse [Good First Issues](https://github.com/kobby-pentangeli/crosschain-secret-mint/labels/good%20first%20issue).
+- Browse [Good First Issues](https://github.com/kobby-pentangeli/atomic-swap/labels/good%20first%20issue).
 
 ## License
 

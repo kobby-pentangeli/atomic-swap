@@ -37,7 +37,7 @@ verify_setup() {
         warn "Solana keypair files not found"
     fi
     
-    if [ -f "$SETUP_DIR/target/release/crosschain-secret-mint" ] || [ -f "$SETUP_DIR/target/release/client" ]; then
+    if [ -f "$SETUP_DIR/target/release/atomic-swap" ] || [ -f "$SETUP_DIR/target/release/client" ]; then
         log "Rust client: Built successfully"
     else
         warn "Rust client binary not found, but build may have completed"

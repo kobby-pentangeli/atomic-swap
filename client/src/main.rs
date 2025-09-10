@@ -15,7 +15,7 @@ const DEFAULT_SOL_RPC_URL: &str = "http://localhost:8899";
 const DEFAULT_SOL_WS_URL: &str = "ws://localhost:8900";
 
 #[derive(Parser)]
-#[command(name = "crosschain-secret-mint")]
+#[command(name = "atomic-swap")]
 #[command(about = "A cross-chain atomic swap: Bitcoin for NFT")]
 struct Cli {
     #[command(subcommand)]

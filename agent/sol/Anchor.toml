@@ -6,7 +6,7 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-sol_htlc = "Dut9qhBMYA4nGejGPD2hb9ine7dR2z7LqYrZvrz6zENR"
+sol_htlc = "Htp3Lm1W6dRgDjVtS89unkgUHJwijXkkseyaCHHdsZKG"
 
 [registry]
 url = "https://api.apr.dev"
@@ -18,8 +18,16 @@ wallet = "~/.config/solana/id.json"
 [scripts]
 test = "cargo test"
 
+[test]
+startup_wait = 5000
+shutdown_wait = 2000
+upgradeable = false
+
 [test.validator]
+bind_address = "0.0.0.0"
 url = "https://api.mainnet-beta.solana.com"
+ledger = ".anchor/test-ledger"
+rpc_port = 8899
 
 [[test.validator.clone]]
 address = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s"
