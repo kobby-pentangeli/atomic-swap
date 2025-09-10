@@ -1,4 +1,4 @@
-# Crosschain Secret Mint
+# Atomic Swap
 
 A cross-chain atomic swap system where Bitcoin payment unlocks NFT minting on Ethereum or Solana through shared secrets using Hash Time Locked Contracts (HTLC).
 
@@ -12,24 +12,6 @@ This system enables trustless atomic swaps between Bitcoin and Ethereum/Solana N
 2. **Seller commits NFT** on Ethereum or Solana using the same secret hash  
 3. **Buyer reveals secret** to mint the NFT on Ethereum or Solana
 4. **Seller claims Bitcoin** using the revealed secret from Ethereum or Solana
-
-## Status
-
-### DONE
-
-- [x] Bitcoin HTLC (script locking mechanism)
-- [x] Ethereum NFT (standard ERC721) contract
-- [x] Solana HTLC program
-- [x] Bitcoin client
-- [x] Ethereum client
-- [x] Solana client
-- [x] End-to-end demo for BTC<=>ETH swap
-- [x] End-to-end demo for BTC<=>SOL swap
-- [x] Dockerize demo
-
-### TODO
-
-- [ ] Architectural diagram
 
 ## End-to-end Demo
 
