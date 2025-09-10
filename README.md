@@ -33,27 +33,22 @@ This system enables trustless atomic swaps between Bitcoin and Ethereum/Solana N
 
 ## End-to-end Demo
 
-## Setup Options
-
 You can run the demo either locally or in a dockerized environment:
 
 - **Docker Setup** (Recommended): No local dependencies needed; everything runs in containers
 - **Local Setup**: Full control and debugging capabilities
 
-## Docker Setup (Recommended)
+### Docker Setup (Recommended)
 
-### Prerequisites
-
-- **Docker** 20.10+ and **Docker Compose** 2.0+
-
-### Quick Start
+Prerequisites: **Docker** 20.10+ and **Docker Compose** 2.0+
+Installing Docker Desktop automically gives Docker Compose as well. [Install here](https://www.docker.com/).
 
 ```bash
 # Clone repo
 git clone https://github.com/kobby-pentangeli/crosschain-secret-mint.git
 cd crosschain-secret-mint
 
-# Start all services (Bitcoin, Ethereum, Solana, and setup)
+# Start all services (Bitcoin, Ethereum, Solana, and app)
 docker-compose up --build
 ```
 
@@ -75,24 +70,58 @@ docker exec -it xchain-app bash
 
 # Load the generated configuration
 source ./atomic_swap.sh
-
-# Follow steps 2.1-2.4 below using the loaded commands
 ```
 
-All demo commands (`lock_btc`, `commit_for_mint`, etc.) work the same inside the container.
+> **Tip:** The setup container stays running after initialization, so you can access it anytime with `docker exec -it xchain-app bash` in a separate terminal
 
-> **Tip:** The setup container stays running after initialization, so you can access it anytime with `docker exec -it xchain-app bash`
+#### Lock BTC
 
-## Local Setup
+```bash
+# 1. (BUYER): Lock Bitcoin in HTLC
+lock_btc
+```
 
-### Prerequisites
+The above command will execute the first step of the swap. Upon success, you should see the **SECRET**, **SECRET_HASH**, and **LOCK_TXID** in stdout. We log this for demo only. Keep an eye on those three values, as you'll need them for claiming the BTC.
+
+#### Commit the NFT
+
+```bash
+# 2. (SELLER): Commit to mint NFT with secret hash
+commit_for_mint --chain <eth|sol> <SECRET_HASH>
+
+# Example commands:
+#   commit_for_mint --chain eth <SECRET_HASH>
+#   commit_for_mint --chain sol <SECRET_HASH>
+```
+
+#### Mint with Secret
+
+```bash
+# 3. (BUYER): Mint NFT by revealing the secret
+mint_with_secret --chain <eth|sol> <SECRET>
+
+# Example commands:
+#   mint_with_secret --chain eth <SECRET>
+#   mint_with_secret --chain sol <SECRET>
+```
+
+#### Claim Bitcoin
+
+```bash
+# 4. (SELLER): Claim Bitcoin using the revealed secret
+claim_btc <SECRET> <SECRET_HASH> <LOCK_TXID>
+```
+
+**NOTE**: The above commands `lock_btc`, `commit_for_mint`, `mint_with_secret`, and `claim_btc` work the same in the local setup case as in the Dockerized case.
+
+### Local Setup & Demo
+
+Prerequisites:
 
 - **Rust** 1.75+ with Cargo
 - **Node.js** 18+ with npm/yarn  
 - **Bitcoin Core** (for regtest mode)
 - **Hardhat** development environment
-
-### Development Tools Installation
 
 ```bash
 # Install Rust
@@ -109,11 +138,7 @@ sudo apt-get install bitcoind
 
 # Or via Homebrew (macOS)
 brew install bitcoin
-```
 
-### Local Setup
-
-```bash
 # Clone repo
 git clone https://github.com/kobby-pentangeli/crosschain-secret-mint.git
 cd crosschain-secret-mint
@@ -131,23 +156,7 @@ The setup script automatically:
 - Generates funded test accounts for both networks
 - Creates ready-to-use demo configuration
 
-## Demo Instructions (Both Docker & Local)
-
-### 2.1 Load Configuration and Lock BTC
-
-> **Note for Docker users:** All commands run inside the `xchain-app` container. Access it with: `docker exec -it xchain-app bash`
-
 **NOTE**: The setup script prefunds the buyer's BTC wallet ("testwallet"), but to ensure sufficient funds and avoid potential errors, you may need to mine additional blocks:
-
-#### For Docker setup
-
-```bash
-# Inside container (after docker exec -it xchain-app bash)
-source ./atomic_swap.sh
-bitcoin-cli -rpcconnect=bitcoin -rpcport=18443 -rpcuser=user -rpcpassword=password -regtest generatetoaddress 101 "$BUYER_BTC_ADDRESS"
-```
-
-#### For Local setup
 
 ```bash
 # In project root directory
@@ -157,44 +166,28 @@ bitcoin-cli -regtest -datadir=.bitcoin generatetoaddress 101 <BUYER_BTC_ADDRESS>
 Copy-paste the `<BUYER_BTC_ADDRESS>` from the `atomic_swap.sh` demo config file. Once you have enough BTC, proceed with the swap:
 
 ```bash
-# 1. (BUYER): Lock Bitcoin in HTLC
-source ./atomic_swap.sh && lock_btc
+# 0. Load the config
+source ./atomic_swap.sh
 ```
 
-The above command will load the demo config and execute the first step of the swap. Upon success, you should see the **SECRET**, **SECRET_HASH**, and **LOCK_TXID** in stdout. We log this for demo only. Keep an eye on those three values, as you'll need them for claiming the BTC.
+The above command will load the demo config. You can then proceed to execute the `lock_btc`, `commit_for_mint`, etc. commands as specified in the Dockerized demo section.
+To stop all services, run the `stop_services` command.
 
-### 2.2 Commit the NFT
+## Customizing Demo Parameters
+
+You can modify the generated `atomic_swap.sh` to customize the demo run:
 
 ```bash
-# 2. (SELLER): Commit to mint NFT with secret hash
-commit_for_mint --chain <eth|sol> <SECRET_HASH>
-
-# Example commands:
-#   commit_for_mint --chain eth <SECRET_HASH>
-#   commit_for_mint --chain sol <SECRET_HASH>
+# Edit amounts, token IDs, metadata, etc.
+export BTC_AMOUNT="2000000"      # 0.02 BTC
+export ETH_NFT_PRICE="2000000000000000000"  # 2 ETH
+export TOKEN_ID="42"
+export METADATA_URI="https://your-nft-metadata.json"
 ```
 
-### 2.3 Mint with Secret
+## Managing Docker Services
 
-```bash
-# 3. (BUYER): Mint NFT by revealing the secret
-mint_with_secret --chain <eth|sol> <SECRET>
-
-# Example commands:
-#   mint_with_secret --chain eth <SECRET>
-#   mint_with_secret --chain sol <SECRET>
-```
-
-### 2.4 Claim Bitcoin
-
-```bash
-# 4. (SELLER): Claim Bitcoin using the revealed secret
-claim_btc <SECRET> <SECRET_HASH> <LOCK_TXID>
-```
-
-## Docker-Specific Commands
-
-### Managing Services
+### Basics
 
 ```bash
 # Start all services
@@ -228,37 +221,6 @@ docker exec -it xchain-eth curl -X POST -H 'Content-Type: application/json' --da
 # Solana cluster status
 docker exec -it xchain-sol solana cluster-version --url http://localhost:8899
 ```
-
-### Custom Parameters
-
-Modify the generated `atomic_swap.sh` to customize the demo run:
-
-```bash
-# Edit amounts, token IDs, metadata, etc.
-export BTC_AMOUNT="2000000"      # 0.02 BTC
-export ETH_NFT_PRICE="2000000000000000000"  # 2 ETH
-export TOKEN_ID="42"
-export METADATA_URI="https://your-nft-metadata.json"
-```
-
-## Configuration Parameters
-
-### Bitcoin Parameters
-
-- `--btc-rpc`: Bitcoin RPC URL (default: <http://localhost:18443>)
-- `--btc-user`: RPC username (default: user)  
-- `--btc-pass`: RPC password (default: password)
-- `--btc-network`: Network type (regtest/testnet/mainnet)
-- `--btc-amount`: Amount in satoshis (default: 100000 = 0.001 BTC)
-- `--timeout`: HTLC timeout in blocks (default: 144 ≈ 24 hours)
-
-### Ethereum Parameters
-
-- `--eth-rpc`: Ethereum RPC URL (default: <http://localhost:8545>)
-- `--nft-contract`: Deployed NFT contract address
-- `--nft-price`: NFT price in wei (default: 1 ETH)
-- `--token-id`: NFT token ID to mint
-- `--metadata-uri`: NFT metadata URL
 
 ## Contributing
 

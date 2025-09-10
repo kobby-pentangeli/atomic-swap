@@ -153,7 +153,7 @@ setup_ethereum() {
     npx hardhat compile
     
     log "Deploying NFT contract with Ignition..."
-    npx hardhat ignition deploy ignition/modules/NFTSecretMint.ts
+    npx hardhat ignition deploy ignition/modules/NFTSecretMint.ts --network docker
 
     local deployment_file="ignition/deployments/chain-31337/deployed_addresses.json"
     if [ ! -f "$deployment_file" ]; then

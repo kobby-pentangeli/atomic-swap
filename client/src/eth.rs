@@ -76,8 +76,10 @@ impl EthClient {
         buyer: Option<Address>,
         metadata_uri: String,
     ) -> Result<H256> {
-        if self.get_commitment(token_id).await.is_ok() {
-            return Err(anyhow!("Commitment already exists for this token ID"));
+        if let Ok(commitment) = self.get_commitment(token_id).await {
+            if commitment.is_active {
+                return Err(anyhow!("Commitment already exists for this token ID"));
+            }
         }
 
         let buyer_addr = buyer.unwrap_or(Address::zero());
