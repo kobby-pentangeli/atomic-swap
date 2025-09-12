@@ -1,4 +1,4 @@
-# Crosschain Secret Mint
+# Atomic Swap
 
 A cross-chain atomic swap system where Bitcoin payment unlocks NFT minting on Ethereum or Solana through shared secrets using Hash Time Locked Contracts (HTLC).
 
@@ -12,24 +12,6 @@ This system enables trustless atomic swaps between Bitcoin and Ethereum/Solana N
 2. **Seller commits NFT** on Ethereum or Solana using the same secret hash  
 3. **Buyer reveals secret** to mint the NFT on Ethereum or Solana
 4. **Seller claims Bitcoin** using the revealed secret from Ethereum or Solana
-
-## Status
-
-### DONE
-
-- [x] Bitcoin HTLC (script locking mechanism)
-- [x] Ethereum NFT (standard ERC721) contract
-- [x] Solana HTLC program
-- [x] Bitcoin client
-- [x] Ethereum client
-- [x] Solana client
-- [x] End-to-end demo for BTC<=>ETH swap
-- [x] End-to-end demo for BTC<=>SOL swap
-- [x] Dockerize demo
-
-### TODO
-
-- [ ] Architectural diagram
 
 ## End-to-end Demo
 
@@ -45,8 +27,8 @@ Installing Docker Desktop automically gives Docker Compose as well. [Install her
 
 ```bash
 # Clone repo
-git clone https://github.com/kobby-pentangeli/crosschain-secret-mint.git
-cd crosschain-secret-mint
+git clone https://github.com/kobby-pentangeli/atomic-swap.git
+cd atomic-swap
 
 # Start all services (Bitcoin, Ethereum, Solana, and app)
 docker-compose up --build
@@ -140,8 +122,8 @@ sudo apt-get install bitcoind
 brew install bitcoin
 
 # Clone repo
-git clone https://github.com/kobby-pentangeli/crosschain-secret-mint.git
-cd crosschain-secret-mint
+git clone https://github.com/kobby-pentangeli/atomic-swap.git
+cd atomic-swap
 
 # Set up the demo parameters and runners
 ./setup.sh
@@ -226,9 +208,9 @@ docker exec -it xchain-sol solana cluster-version --url http://localhost:8899
 
 Thank you for considering contributing to this project! All contributions large and small are actively accepted.
 
-- To get started, please read the [contribution guidelines](https://github.com/kobby-pentangeli/crosschain-secret-mint/blob/main/CONTRIBUTING.md).
+- To get started, please read the [contribution guidelines](https://github.com/kobby-pentangeli/atomic-swap/blob/main/CONTRIBUTING.md).
 
-- Browse [Good First Issues](https://github.com/kobby-pentangeli/crosschain-secret-mint/labels/good%20first%20issue).
+- Browse [Good First Issues](https://github.com/kobby-pentangeli/atomic-swap/labels/good%20first%20issue).
 
 ## License
 

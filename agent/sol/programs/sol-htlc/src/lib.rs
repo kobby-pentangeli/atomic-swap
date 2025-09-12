@@ -13,7 +13,7 @@ use anchor_spl::metadata::mpl_token_metadata::types::DataV2;
 use anchor_spl::metadata::{create_metadata_accounts_v3, CreateMetadataAccountsV3, Metadata};
 use anchor_spl::token::{mint_to, Mint, MintTo, Token, TokenAccount};
 
-declare_id!("Dut9qhBMYA4nGejGPD2hb9ine7dR2z7LqYrZvrz6zENR");
+declare_id!("Htp3Lm1W6dRgDjVtS89unkgUHJwijXkkseyaCHHdsZKG");
 
 pub const MAX_NAME_LEN: usize = 32;
 pub const MAX_SYMBOL_LEN: usize = 10;
