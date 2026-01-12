@@ -1,24 +1,61 @@
-//! Hash Time Locked Contract (HTLC) for Bitcoin
+//! Hash Time Locked Contract (HTLC) implementation for Bitcoin.
+//!
+//! This crate provides a P2WSH (Pay-to-Witness-Script-Hash) HTLC implementation
+//! that enables atomic swaps between Bitcoin and other blockchains. The HTLC
+//! allows funds to be claimed in two ways:
+//!
+//! 1. **Reveal path**: The seller can claim funds by revealing the secret
+//!    (preimage of the hash)
+//! 2. **Timeout path**: The buyer can reclaim funds after a specified
+//!    block height (using OP_CHECKLOCKTIMEVERIFY)
+//!
+//! # Example
+//!
+//! ```rust,ignore
+//! use btc_htlc::{Contract, HtlcParams, generate_random_secret, hash_secret};
+//!
+//! let secret = generate_random_secret();
+//! let secret_hash = hash_secret(&secret);
+//!
+//! let params = HtlcParams {
+//!     secret_hash,
+//!     seller: seller_pubkey,
+//!     buyer: buyer_pubkey,
+//!     timeout: current_height + 144, // ~24 hours
+//!     network: Network::Bitcoin,
+//! };
+//!
+//! let contract = Contract::new(params);
+//! let address = contract.address();
+//! ```
 
 use bitcoin::opcodes::all::*;
 use bitcoin::script::Builder as ScriptBuilder;
 use bitcoin::{Address, Network, PublicKey, ScriptBuf, Witness};
 use sha2::{Digest, Sha256};
 
+/// Result type for HTLC operations.
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Errors that can occur during HTLC operations.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// The provided secret does not hash to the expected value.
     #[error("invalid secret provided")]
     InvalidSecret,
+    /// The timeout value is invalid.
     #[error("Invalid timeout value: {0}")]
     InvalidTimeout(u16),
+    /// The provided public key is invalid.
     #[error("Invalid public key")]
     InvalidPublicKey,
+    /// Failed to generate the HTLC script.
     #[error("Script generation failed")]
     ScriptGenerationFailed,
+    /// Failed to generate the P2WSH address.
     #[error("Address generation failed")]
     AddressGenerationFailed,
+    /// Failed to create the witness for spending.
     #[error("Witness creation failed: {0}")]
     WitnessCreation(String),
 }
@@ -32,7 +69,7 @@ pub struct Contract {
     pub seller: PublicKey,
     /// Public key of the buyer (who can reclaim after timeout)
     pub buyer: PublicKey,
-    /// Absolute timeout in blocks (using nLockTime)
+    /// Absolute timeout in blocks (using `nLockTime`)
     pub timeout: u32,
     /// The actual script
     pub script: ScriptBuf,
@@ -250,7 +287,6 @@ mod tests {
         let original_secret = generate_random_secret();
         let hex_secret = hex::encode(original_secret);
         let parsed_secret = hex_to_secret(&hex_secret).unwrap();
-
         assert_eq!(original_secret, parsed_secret);
     }
 
@@ -306,7 +342,6 @@ mod tests {
         };
 
         let contract = Contract::new(params);
-
         assert!(contract.verify_secret(&secret));
 
         let wrong_secret = generate_random_secret();
