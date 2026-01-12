@@ -1,4 +1,10 @@
-//! RPC client for Ethereum
+//! Ethereum RPC client for interacting with the NFTSecretMint contract.
+//!
+//! This module provides functionality to:
+//! - Create commitments for NFT minting
+//! - Mint NFTs by revealing secrets
+//! - Cancel commitments
+//! - Query commitment status
 
 use std::sync::Arc;
 
@@ -15,8 +21,7 @@ use tracing::info;
 use crate::types::CommitmentInfo;
 
 // Contract ABI for encoding/decoding calls and events
-const NFT_SECRET_MINT_JSON: &str =
-    include_str!("../../agent/eth/artifacts/contracts/NFTSecretMint.sol/NFTSecretMint.json");
+const NFT_SECRET_MINT_JSON: &str = include_str!("../abi/NFTSecretMint.json");
 
 // On-chain operations.
 const COMMIT_FOR_MINT: &str = "commitForMint";
@@ -105,16 +110,20 @@ impl EthClient {
         Ok(tx_hash)
     }
 
-    /// Mint NFT by revealing the secret
+    /// Mint NFT by revealing the secret.
+    ///
+    /// Validates that the commitment is active and that the minimum commitment
+    /// time has passed before attempting to mint.
     pub async fn mint_with_secret(&self, secret: H256, token_id: U256) -> Result<H256> {
         let commit = self.get_commitment(token_id).await?;
         if !commit.is_active {
             return Err(anyhow!("No active commitment for this token"));
         }
-        // TODO (kobby-pentangeli): uncomment in prod
-        // if !self.can_mint_now(token_id).await? {
-        //     return Err(anyhow::anyhow!("Cannot mint now; check timing constraints"));
-        // }
+        if !self.can_mint_now(token_id).await? {
+            return Err(anyhow!(
+                "Cannot mint yet: minimum commitment time has not passed or commitment has expired"
+            ));
+        }
 
         let gas_price = self.get_gas_price().await?;
 
