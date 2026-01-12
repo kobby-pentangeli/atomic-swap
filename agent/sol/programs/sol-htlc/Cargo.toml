@@ -18,6 +18,11 @@ idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
 
 
 [dependencies]
-anchor-lang = { version = "0.31.1", features = ["init-if-needed"] }
-anchor-spl = { version = "0.31.1", features = ["metadata"] }
+anchor-lang = { version = "0.32.1", features = ["init-if-needed"] }
+anchor-spl = { version = "0.32.1", features = ["metadata"] }
 mpl-token-metadata = "5.1.1"
+sha2 = "0.10"
+
+# Suppress cfg warnings from Anchor/Solana macro expansions (upstream issue)
+[lints.rust]
+unexpected_cfgs = "allow"
