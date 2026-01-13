@@ -22,7 +22,6 @@ struct Cli {
     command: Commands,
 }
 
-// TODO (kobby-pentangeli): specify these params in `.env` or JSON
 #[derive(Subcommand)]
 enum Commands {
     /// Buyer locks Bitcoin

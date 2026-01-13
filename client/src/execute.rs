@@ -1,4 +1,13 @@
-use std::time::Duration;
+//! Implements the cross-chain atomic swap executor.
+//!
+//! This module orchestrates the atomic swap flow between Bitcoin and NFT chains
+//! (Ethereum or Solana). It provides functions for each step of the swap:
+//! 1. Lock Bitcoin in an HTLC
+//! 2. Commit NFT for minting
+//! 3. Mint NFT by revealing the secret
+//! 4. Claim Bitcoin using the revealed secret
+
+use std::time::{Duration, Instant};
 
 use anchor_client::solana_sdk::signature::read_keypair_file;
 use anyhow::{Context, Result, anyhow};
@@ -15,8 +24,21 @@ use crate::eth::EthClient;
 use crate::sol::SolClient;
 use crate::types::{Chain, ClaimBtcArgs, CommitForMintArgs, LockBtcArgs, MintWithSecretArgs};
 
-// TODO (kobby-pentangeli):
-// Supply secret (preimage) as a file from CLI.
+/// Maximum time to wait for mint availability.
+const MINT_AVAILABILITY_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Interval between mint availability checks.
+const MINT_CHECK_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Locks Bitcoin in an HTLC contract.
+///
+/// This is the first step of the atomic swap. The buyer generates a secret,
+/// creates its hash, and locks Bitcoin that can be claimed by the seller
+/// only if they know the secret.
+///
+/// # Returns
+///
+/// The secret and its hash are logged for use in subsequent steps.
 pub fn lock_bitcoin(args: LockBtcArgs) -> Result<()> {
     info!("Executing Bitcoin HTLC");
 
@@ -75,6 +97,11 @@ pub fn lock_bitcoin(args: LockBtcArgs) -> Result<()> {
     Ok(())
 }
 
+/// Commits an NFT for minting on the specified chain.
+///
+/// This is step 2 of the atomic swap. After the buyer locks Bitcoin, the seller
+/// commits to minting an NFT using the same secret hash. The NFT can only be
+/// minted by revealing the secret.
 pub async fn commit_for_mint(args: CommitForMintArgs) -> Result<()> {
     match args.chain {
         Chain::Ethereum => commit_for_mint_eth(args).await,
@@ -82,6 +109,11 @@ pub async fn commit_for_mint(args: CommitForMintArgs) -> Result<()> {
     }
 }
 
+/// Mints an NFT by revealing the secret on the specified chain.
+///
+/// This is step 3 of the atomic swap. The buyer reveals the secret to mint
+/// the NFT. Once the secret is revealed on-chain, the seller can use it to
+/// claim the locked Bitcoin.
 pub async fn mint_with_secret(args: MintWithSecretArgs) -> Result<()> {
     match args.chain {
         Chain::Ethereum => mint_with_secret_eth(args).await,
@@ -89,6 +121,7 @@ pub async fn mint_with_secret(args: MintWithSecretArgs) -> Result<()> {
     }
 }
 
+/// Commits an NFT for minting on Ethereum.
 async fn commit_for_mint_eth(args: CommitForMintArgs) -> Result<()> {
     info!("Executing NFT commitment for minting");
 
@@ -148,6 +181,7 @@ async fn commit_for_mint_eth(args: CommitForMintArgs) -> Result<()> {
     Ok(())
 }
 
+/// Commits an NFT for minting on Solana.
 fn commit_for_mint_sol(args: CommitForMintArgs) -> Result<()> {
     info!("Executing Solana NFT commitment for minting");
 
@@ -216,6 +250,10 @@ fn commit_for_mint_sol(args: CommitForMintArgs) -> Result<()> {
     Ok(())
 }
 
+/// Mints an NFT on Ethereum by revealing the secret.
+///
+/// Waits for the minimum commitment time to pass before attempting to mint.
+/// The revealed secret can then be used by the seller to claim the locked Bitcoin.
 async fn mint_with_secret_eth(args: MintWithSecretArgs) -> Result<()> {
     info!("Executing NFT mint with secret reveal");
 
@@ -232,25 +270,26 @@ async fn mint_with_secret_eth(args: MintWithSecretArgs) -> Result<()> {
     let token_id = U256::from(token_id);
     let secret = H256(secret);
 
-    // DEMO only
-    info!("Waiting for minimum commitment time to pass");
-    sleep(Duration::from_secs(10)).await;
+    if !client.can_mint_now(token_id).await? {
+        info!("Waiting for minimum commitment time to pass");
+        let wait_start = Instant::now();
+        loop {
+            if wait_start.elapsed() > MINT_AVAILABILITY_TIMEOUT {
+                return Err(anyhow!(
+                    "Timeout waiting for mint availability after {:?}",
+                    MINT_AVAILABILITY_TIMEOUT
+                ));
+            }
 
-    // if !client.can_mint_now(token_id).await? {
-    //     let wait_start = Instant::now();
-    //     loop {
-    //         if wait_start.elapsed() > Duration::from_secs(10) {
-    //             return Err(anyhow!("Timeout waiting for mint availability"));
-    //         }
+            if client.can_mint_now(token_id).await? {
+                info!("Minimum commitment time passed, proceeding with mint");
+                break;
+            }
 
-    //         if client.can_mint_now(token_id).await? {
-    //             info!("Minimum commitment time passed, proceeding with mint");
-    //             break;
-    //         }
-
-    //         sleep(Duration::from_secs(3)).await;
-    //     }
-    // }
+            debug!("Mint not yet available, waiting {:?}", MINT_CHECK_INTERVAL);
+            sleep(MINT_CHECK_INTERVAL).await;
+        }
+    }
 
     let txid = client
         .mint_with_secret(secret, token_id)
@@ -266,6 +305,7 @@ async fn mint_with_secret_eth(args: MintWithSecretArgs) -> Result<()> {
     Ok(())
 }
 
+/// Mints an NFT on Solana by revealing the secret.
 fn mint_with_secret_sol(args: MintWithSecretArgs) -> Result<()> {
     info!("Executing Solana NFT mint with secret reveal");
 
@@ -297,6 +337,16 @@ fn mint_with_secret_sol(args: MintWithSecretArgs) -> Result<()> {
     Ok(())
 }
 
+/// Claims Bitcoin from the HTLC using the revealed secret.
+///
+/// This is the final step of the atomic swap. After the buyer reveals the
+/// secret on the NFT chain, the seller uses the same secret to claim the
+/// locked Bitcoin.
+///
+/// # Verification
+///
+/// The function verifies that the provided secret hashes to the expected
+/// value before attempting the claim.
 #[instrument(skip_all)]
 pub fn claim_bitcoin(args: ClaimBtcArgs) -> Result<()> {
     info!(
