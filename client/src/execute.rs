@@ -6,6 +6,9 @@
 //! 2. Commit NFT for minting
 //! 3. Mint NFT by revealing the secret
 //! 4. Claim Bitcoin using the revealed secret
+//!
+//! Additionally, it provides a cancellation mechanism:
+//! - Cancel NFT commitment (seller only before timeout, anyone after timeout)
 
 use std::time::{Duration, Instant};
 
@@ -22,7 +25,9 @@ use tracing::{debug, info, instrument};
 use crate::btc::{BtcClient, utils};
 use crate::eth::EthClient;
 use crate::sol::SolClient;
-use crate::types::{Chain, ClaimBtcArgs, CommitForMintArgs, LockBtcArgs, MintWithSecretArgs};
+use crate::types::{
+    CancelCommitArgs, Chain, ClaimBtcArgs, CommitForMintArgs, LockBtcArgs, MintWithSecretArgs,
+};
 
 /// Maximum time to wait for mint availability.
 const MINT_AVAILABILITY_TIMEOUT: Duration = Duration::from_secs(120);
@@ -118,6 +123,19 @@ pub async fn mint_with_secret(args: MintWithSecretArgs) -> Result<()> {
     match args.chain {
         Chain::Ethereum => mint_with_secret_eth(args).await,
         Chain::Solana => tokio::task::spawn_blocking(move || mint_with_secret_sol(args)).await?,
+    }
+}
+
+/// Cancels an NFT commitment on the specified chain.
+///
+/// This allows the seller to cancel their commitment before the NFT is minted,
+/// or allows anyone to clean up an expired commitment after the timeout period.
+/// On Ethereum, only the seller can cancel before timeout; after timeout, anyone
+/// can cancel. On Solana, only the seller can cancel.
+pub async fn cancel_commitment(args: CancelCommitArgs) -> Result<()> {
+    match args.chain {
+        Chain::Ethereum => cancel_commitment_eth(args).await,
+        Chain::Solana => tokio::task::spawn_blocking(move || cancel_commitment_sol(args)).await?,
     }
 }
 
@@ -332,6 +350,79 @@ fn mint_with_secret_sol(args: MintWithSecretArgs) -> Result<()> {
         secret_revealed = %hex::encode(args.secret),
         token_id = %args.token_id,
         "Solana NFT minted successfully, secret revealed"
+    );
+
+    Ok(())
+}
+
+/// Cancels an NFT commitment on Ethereum.
+///
+/// Only the seller can cancel before the commitment timeout. After the timeout
+/// has passed, anyone can cancel the commitment to clean up expired state.
+async fn cancel_commitment_eth(args: CancelCommitArgs) -> Result<()> {
+    info!("Executing Ethereum NFT commitment cancellation");
+
+    let rpc_url = args.eth_rpc.as_ref().unwrap();
+    let contract_addr = args.nft_contract.as_ref().unwrap();
+    let private_key = args.caller_eth_key.as_ref().unwrap();
+    let token_id = args.token_id;
+
+    let client = EthClient::new(rpc_url, private_key, *contract_addr)
+        .await
+        .context("Failed to initialize Ethereum client")?;
+
+    info!(
+        caller_address = %client.get_address(),
+        token_id = %token_id,
+        "Connected to Ethereum, attempting to cancel commitment"
+    );
+
+    let tx_hash = client
+        .cancel_commitment(U256::from(token_id))
+        .await
+        .context("Failed to cancel commitment")?;
+
+    info!(
+        tx_hash = %tx_hash,
+        token_id = %token_id,
+        "Commitment cancelled successfully"
+    );
+
+    Ok(())
+}
+
+/// Cancels an NFT commitment on Solana.
+///
+/// Only the seller who created the commitment can cancel it. The commitment
+/// must not have been used (NFT not yet minted).
+fn cancel_commitment_sol(args: CancelCommitArgs) -> Result<()> {
+    info!("Executing Solana NFT commitment cancellation");
+
+    let rpc_url = args.sol_rpc.as_ref().unwrap();
+    let ws_url = args.sol_ws.as_ref().unwrap();
+    let program_id = args.program_id.as_ref().unwrap();
+    let keypair_path = args.caller_sol_keypair.as_ref().unwrap();
+    let token_id = args.token_id;
+
+    let payer = read_keypair_file(keypair_path).map_err(|e| anyhow!("{e}"))?;
+
+    let client = SolClient::new(payer, program_id, rpc_url, ws_url)
+        .context("Failed to initialize Solana client")?;
+
+    info!(
+        caller_address = %client.pubkey(),
+        token_id = %token_id,
+        "Connected to Solana, attempting to cancel commitment"
+    );
+
+    let sig = client
+        .cancel_commitment(token_id)
+        .context("Failed to cancel Solana commitment")?;
+
+    info!(
+        signature = %sig,
+        token_id = %token_id,
+        "Solana commitment cancelled successfully"
     );
 
     Ok(())

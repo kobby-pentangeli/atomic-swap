@@ -7,7 +7,9 @@ pub mod execute;
 pub mod sol;
 pub mod types;
 
-use types::{Chain, ClaimBtcArgs, CommitForMintArgs, LockBtcArgs, MintWithSecretArgs};
+use types::{
+    CancelCommitArgs, Chain, ClaimBtcArgs, CommitForMintArgs, LockBtcArgs, MintWithSecretArgs,
+};
 
 const DEFAULT_BTC_RPC_URL: &str = "http://localhost:18443";
 const DEFAULT_ETH_RPC_URL: &str = "http://localhost:8545";
@@ -185,6 +187,43 @@ enum Commands {
         /// Destination address (optional)
         #[arg(long)]
         destination: Option<String>,
+    },
+
+    /// Cancel an NFT commitment (seller only, or anyone after timeout)
+    CancelCommit {
+        /// Target blockchain (eth/sol)
+        #[arg(long)]
+        chain: String,
+
+        // Ethereum-specific options
+        /// Ethereum RPC URL (required if chain=eth)
+        #[arg(long, default_value = DEFAULT_ETH_RPC_URL)]
+        eth_rpc: Option<String>,
+        /// Caller's Ethereum private key (required if chain=eth)
+        #[arg(long)]
+        caller_eth_key: Option<String>,
+        /// NFT contract address (required if chain=eth)
+        #[arg(long)]
+        nft_contract: Option<String>,
+
+        // Solana-specific options
+        /// Solana RPC URL (required if chain=sol)
+        #[arg(long, default_value = DEFAULT_SOL_RPC_URL)]
+        sol_rpc: Option<String>,
+        /// Solana WebSocket URL (required if chain=sol)
+        #[arg(long, default_value = DEFAULT_SOL_WS_URL)]
+        sol_ws: Option<String>,
+        /// Caller's Solana keypair file path (required if chain=sol)
+        #[arg(long)]
+        caller_sol_keypair: Option<String>,
+        /// Solana HTLC program ID (required if chain=sol)
+        #[arg(long)]
+        program_id: Option<String>,
+
+        // Common fields
+        /// Token ID of the commitment to cancel
+        #[arg(long)]
+        token_id: u64,
     },
 }
 
@@ -394,6 +433,66 @@ async fn main() -> Result<()> {
             };
 
             execute::claim_bitcoin(args)
+        }
+
+        Commands::CancelCommit {
+            chain,
+            eth_rpc,
+            caller_eth_key,
+            nft_contract,
+            sol_rpc,
+            sol_ws,
+            caller_sol_keypair,
+            program_id,
+            token_id,
+        } => {
+            let chain = chain
+                .parse::<Chain>()
+                .context("Invalid chain specification")?;
+
+            let args = CancelCommitArgs {
+                chain: chain.clone(),
+                // Ethereum fields
+                eth_rpc,
+                caller_eth_key,
+                nft_contract: nft_contract
+                    .map(|s| s.parse())
+                    .transpose()
+                    .context("Invalid NFT contract address")?,
+                // Solana fields
+                sol_rpc,
+                sol_ws,
+                caller_sol_keypair,
+                program_id,
+                // Common fields
+                token_id,
+            };
+
+            match chain {
+                Chain::Ethereum => {
+                    if args.eth_rpc.is_none()
+                        || args.caller_eth_key.is_none()
+                        || args.nft_contract.is_none()
+                    {
+                        return Err(anyhow::anyhow!(
+                            "For Ethereum: --eth-rpc, --caller-eth-key, and --nft-contract are required"
+                        ));
+                    }
+                }
+                Chain::Solana => {
+                    if args.sol_rpc.is_none()
+                        || args.sol_ws.is_none()
+                        || args.caller_sol_keypair.is_none()
+                        || args.program_id.is_none()
+                    {
+                        return Err(anyhow::anyhow!(
+                            "For Solana: --sol-rpc, --sol-ws, --caller-sol-keypair, and --program-id are required"
+                        ));
+                    }
+                }
+            }
+
+            execute::cancel_commitment(args).await
         }
     }
 }

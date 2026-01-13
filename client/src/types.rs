@@ -106,3 +106,19 @@ pub struct ClaimBtcArgs {
     pub timeout: u32,
     pub destination: Option<BtcAddress>,
 }
+
+#[derive(Debug, Clone)]
+pub struct CancelCommitArgs {
+    pub chain: Chain,
+    // Ethereum fields
+    pub eth_rpc: Option<String>,
+    pub caller_eth_key: Option<String>,
+    pub nft_contract: Option<EthAddress>,
+    // Solana fields
+    pub sol_rpc: Option<String>,
+    pub sol_ws: Option<String>,
+    pub caller_sol_keypair: Option<String>,
+    pub program_id: Option<String>,
+    // Common fields
+    pub token_id: u64,
+}
