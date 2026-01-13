@@ -271,13 +271,14 @@ pub fn hex_to_secret(hex_str: &str) -> anyhow::Result<[u8; 32]> {
 #[cfg(test)]
 mod tests {
     use bitcoin::PrivateKey;
-    use bitcoin::secp256k1::Secp256k1;
+    use bitcoin::secp256k1::{Secp256k1, SecretKey};
 
     use super::*;
 
     fn create_test_keypair() -> (PrivateKey, PublicKey) {
         let secp = Secp256k1::new();
-        let private_key = PrivateKey::generate(Network::Regtest);
+        let secret_key = SecretKey::new(&mut rand::thread_rng());
+        let private_key = PrivateKey::new(secret_key, Network::Regtest);
         let public_key = private_key.public_key(&secp);
         (private_key, public_key)
     }
