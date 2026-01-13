@@ -21,7 +21,7 @@ use tracing::info;
 use crate::types::CommitmentInfo;
 
 // Contract ABI for encoding/decoding calls and events
-const NFT_SECRET_MINT_JSON: &str = include_str!("../abi/NFTSecretMint.json");
+const NFT_SECRET_MINT_JSON: &str = include_str!("../../agent/eth/abi/NFTSecretMint.json");
 
 // On-chain operations.
 const COMMIT_FOR_MINT: &str = "commitForMint";

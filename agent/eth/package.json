@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "compile": "hardhat compile",
-    "postcompile": "cp artifacts/contracts/NFTSecretMint.sol/NFTSecretMint.json ../../client/abi/",
+    "postcompile": "cp artifacts/contracts/NFTSecretMint.sol/NFTSecretMint.json abi/",
     "test": "hardhat test",
     "deploy:local": "hardhat ignition deploy ignition/modules/NFTSecretMint.ts --network localhost",
     "deploy:sepolia": "hardhat ignition deploy ignition/modules/NFTSecretMint.ts --network sepolia", 
