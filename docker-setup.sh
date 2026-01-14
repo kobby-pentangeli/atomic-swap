@@ -11,7 +11,8 @@ NC='\033[0m' # No Color
 
 SETUP_DIR="/app"
 BITCOIN_DATA_DIR="$SETUP_DIR/.bitcoin"
-LOG_FILE="$SETUP_DIR/setup.log"
+SWAP_DIR="$SETUP_DIR/.swap"
+LOG_FILE="$SWAP_DIR/setup.log"
 
 log() {
     echo -e "${BLUE}[INFO]${NC} $1"
@@ -82,7 +83,7 @@ wait_for_solana() {
     local max_attempts=60
     local attempt=1
     log "Waiting for Solana test validator to start..."
-    
+
     while [ $attempt -le 10 ]; do
         if nc -z solana 8899 2>/dev/null; then
             log "Solana port 8899 is open"
@@ -92,22 +93,22 @@ wait_for_solana() {
         sleep 2
         ((attempt++))
     done
-    
+
     attempt=1
     while [ $attempt -le $max_attempts ]; do
         if curl -s -X POST http://solana:8899 \
             -H "Content-Type: application/json" \
             -d '{"jsonrpc":"2.0","id":1,"method":"getVersion"}' 2>/dev/null | grep -q "result"; then
             success "Solana RPC is responding!"
-            
+
             sleep 5
-            
+
             if solana cluster-version --url http://solana:8899 2>/dev/null; then
                 success "Solana test validator is fully ready!"
                 return 0
             fi
         fi
-        
+
         if curl -s http://solana:8899/health 2>/dev/null | grep -q "ok"; then
             log "Solana health check passed"
             sleep 3
@@ -116,15 +117,15 @@ wait_for_solana() {
                 return 0
             fi
         fi
-        
+
         echo -n "."
         sleep 3
         ((attempt++))
     done
-    
+
     log "Debug: Attempting direct curl to Solana RPC..."
     curl -v http://solana:8899 2>&1 | head -20
-    
+
     error "Solana test validator failed to start within $((max_attempts * 3)) seconds"
     return 1
 }
@@ -141,17 +142,17 @@ setup_bitcoin() {
 
 setup_ethereum() {
     log "Setting up Ethereum development environment..."
-    
+
     cd "$SETUP_DIR/agent/eth"
 
     # Clean and reinstall dependencies
     log "Ensuring correct dependencies..."
     rm -rf node_modules
     npm install --silent
-    
+
     log "Compiling smart contracts..."
     npx hardhat compile
-    
+
     log "Deploying NFT contract with Ignition..."
     npx hardhat ignition deploy ignition/modules/NFTSecretMint.ts --network docker
 
@@ -159,7 +160,7 @@ setup_ethereum() {
     if [ ! -f "$deployment_file" ]; then
         error "Deployment artifacts not found! Check hardhat.log for details"
     fi
-    
+
     local contract_address
     if contract_address=$(jq -r '.["NFTSecretMintModule#NFTSecretMint"]' "$deployment_file" 2>/dev/null); then
         if [ -z "$contract_address" ] || [ "$contract_address" == "null" ]; then
@@ -168,10 +169,12 @@ setup_ethereum() {
     else
         error "Failed to parse deployment file $deployment_file"
     fi
-    
-    echo "$contract_address" > contract_address.txt
+
+    # Write contract address to .swap directory
+    mkdir -p "$SWAP_DIR"
+    echo "$contract_address" > "$SWAP_DIR/contract_address.txt"
     log "Contract deployed at: $contract_address"
-    
+
     cd "$SETUP_DIR"
     success "Ethereum environment ready!"
 }
@@ -184,66 +187,69 @@ setup_solana() {
 
     log "Generating Solana keypairs..."
 
+    # Ensure .swap/keypairs directory exists
+    mkdir -p "$SWAP_DIR/keypairs"
+
     if [ ! -f "$DEFAULT_SIGNER" ]; then
         solana-keygen new --no-bip39-passphrase --silent --outfile $DEFAULT_SIGNER
     fi
 
-    if [ ! -f "$SETUP_DIR/buyer-keypair.json" ]; then
-        solana-keygen new --no-bip39-passphrase --silent --outfile $SETUP_DIR/buyer-keypair.json
+    if [ ! -f "$SWAP_DIR/keypairs/buyer.json" ]; then
+        solana-keygen new --no-bip39-passphrase --silent --outfile "$SWAP_DIR/keypairs/buyer.json"
     fi
-    
-    if [ ! -f "$SETUP_DIR/seller-keypair.json" ]; then
-        solana-keygen new --no-bip39-passphrase --silent --outfile $SETUP_DIR/seller-keypair.json
+
+    if [ ! -f "$SWAP_DIR/keypairs/seller.json" ]; then
+        solana-keygen new --no-bip39-passphrase --silent --outfile "$SWAP_DIR/keypairs/seller.json"
     fi
-    
+
     local default_signer=$(solana-keygen pubkey $DEFAULT_SIGNER)
-    local buyer_pubkey=$(solana-keygen pubkey $SETUP_DIR/buyer-keypair.json)
-    local seller_pubkey=$(solana-keygen pubkey $SETUP_DIR/seller-keypair.json)
-    
+    local buyer_pubkey=$(solana-keygen pubkey "$SWAP_DIR/keypairs/buyer.json")
+    local seller_pubkey=$(solana-keygen pubkey "$SWAP_DIR/keypairs/seller.json")
+
     log "Funding Solana accounts..."
     solana airdrop 20 "$default_signer" --url http://solana:8899
     solana airdrop 10 "$buyer_pubkey" --url http://solana:8899
     solana airdrop 10 "$seller_pubkey" --url http://solana:8899
-    
+
     log "Buyer Solana address: $buyer_pubkey"
     log "Seller Solana address: $seller_pubkey"
 
     if [ -d "$SETUP_DIR/agent/sol" ]; then
         log "Building and deploying Solana program..."
         cd "$SETUP_DIR/agent/sol"
-        
+
         log "Syncing Anchor keys..."
         anchor keys sync
-        
+
         log "Building Anchor program... might take a while"
         anchor build
-        
+
         log "Deploying program to local validator..."
         anchor deploy --provider.cluster http://solana:8899
-        
-        # Extract program ID
+
+        # Extract program ID and write to .swap directory
         if [ -f "target/deploy/sol_htlc-keypair.json" ]; then
             local program_id=$(solana-keygen pubkey target/deploy/sol_htlc-keypair.json)
-            echo "$program_id" > program_id.txt
+            echo "$program_id" > "$SWAP_DIR/program_id.txt"
             log "Program deployed with ID: $program_id"
         else
             warn "Program keypair not found, checking Anchor.toml..."
             local program_id=$(grep -o 'sol_htlc = "[^"]*"' Anchor.toml | cut -d'"' -f2)
             if [ -n "$program_id" ]; then
-                echo "$program_id" > program_id.txt
+                echo "$program_id" > "$SWAP_DIR/program_id.txt"
                 log "Program ID from Anchor.toml: $program_id"
             else
                 error "Could not determine program ID. Check anchor build output."
             fi
         fi
-        
+
         cd "$SETUP_DIR"
     else
         warn "Solana agent directory not found at $SETUP_DIR/agent/sol, skipping program deployment"
-        echo "11111111111111111111111111111112" > program_id.txt
+        echo "11111111111111111111111111111112" > "$SWAP_DIR/program_id.txt"
         warn "Using placeholder program ID. Deploy your actual program and update SOL_PROGRAM_ID"
     fi
-    
+
     success "Solana environment ready!"
 }
 
@@ -253,7 +259,7 @@ generate_test_accounts() {
 
     # Build the xpriv derivation binary if needed
     local derive_binary="$SETUP_DIR/target/release/derive_privkey"
-    
+
     if [ ! -f "$derive_binary" ]; then
         log "Building key derivation helper..."
         cd "$SETUP_DIR"
@@ -267,7 +273,7 @@ generate_test_accounts() {
         log "Making derive_privkey binary executable..."
         chmod +x "$derive_binary" || error "Failed to make derive_privkey executable"
     fi
-    
+
     # Test the binary works
     log "Testing derive_privkey binary..."
     if "$derive_binary" 2>/dev/null; then
@@ -281,17 +287,17 @@ generate_test_accounts() {
     if buyer_btc_address=$(bitcoin-cli -rpcconnect=bitcoin -rpcport=18443 -rpcuser=user -rpcpassword=password -regtest getnewaddress "buyer" 2>/dev/null); then
         if addr_info=$(bitcoin-cli -rpcconnect=bitcoin -rpcport=18443 -rpcuser=user -rpcpassword=password -regtest getaddressinfo "$buyer_btc_address" 2>/dev/null); then
             buyer_btc_pubkey=$(echo "$addr_info" | jq -r .pubkey)
-            
+
             # Get derivation path
             local hdkeypath=$(echo "$addr_info" | jq -r .hdkeypath)
-            
+
             # Get the wallet's master private key directly
             local wallet_info=$(bitcoin-cli -rpcconnect=bitcoin -rpcport=18443 -rpcuser=user -rpcpassword=password -regtest getwalletinfo)
             local wallet_name=$(echo "$wallet_info" | jq -r .walletname)
-            
+
             # Get descriptors with private keys
             local descriptors=$(bitcoin-cli -rpcconnect=bitcoin -rpcport=18443 -rpcuser=user -rpcpassword=password -regtest listdescriptors true)
-            
+
             local path_prefix=""
             if [[ "$hdkeypath" =~ m/84h/1h/0h/0/ ]]; then
                 path_prefix="84h/1h/0h/0"
@@ -304,23 +310,23 @@ generate_test_accounts() {
             fi
 
             local desc=$(echo "$descriptors" | jq -r --arg prefix "$path_prefix" '.descriptors[] | select(.desc | contains($prefix)) | select(.desc | test("/0/\\*")) | .desc' | head -1)
-            
+
             if [[ -n "$desc" ]]; then
                 log "Found descriptor for buyer: $desc"
                 local base_xpriv=""
-                
+
                 base_xpriv=$(echo "$desc" | sed -n 's/.*(\[.*\]\([a-zA-Z0-9]*\)\/.*/\1/p')
-                
+
                 if [[ -z "$base_xpriv" ]]; then
                     base_xpriv=$(echo "$desc" | grep -oE 'tprv[a-zA-Z0-9]+')
                 fi
-                
+
                 if [[ -z "$base_xpriv" ]]; then
                     base_xpriv=$(echo "$desc" | sed -n 's/.*]\([^/]*\)\/.*/\1/p')
                 fi
-                
+
                 log "Extracted base_xpriv: ${base_xpriv:0:10}... hdkeypath: $hdkeypath"
-                
+
                 if [[ -n "$base_xpriv" && -n "$hdkeypath" ]]; then
                     log "Attempting to derive buyer private key..."
                     if buyer_btc_privkey=$("$derive_binary" "$base_xpriv" "$hdkeypath" 2>&1); then
@@ -345,11 +351,11 @@ generate_test_accounts() {
     if seller_btc_address=$(bitcoin-cli -rpcconnect=bitcoin -rpcport=18443 -rpcuser=user -rpcpassword=password -regtest getnewaddress "seller" 2>/dev/null); then
         if addr_info=$(bitcoin-cli -rpcconnect=bitcoin -rpcport=18443 -rpcuser=user -rpcpassword=password -regtest getaddressinfo "$seller_btc_address" 2>/dev/null); then
             seller_btc_pubkey=$(echo "$addr_info" | jq -r .pubkey)
-            
+
             local hdkeypath=$(echo "$addr_info" | jq -r .hdkeypath)
-            
+
             local descriptors=$(bitcoin-cli -rpcconnect=bitcoin -rpcport=18443 -rpcuser=user -rpcpassword=password -regtest listdescriptors true)
-            
+
             local path_prefix=""
             if [[ "$hdkeypath" =~ m/84h/1h/0h/0/ ]]; then
                 path_prefix="84h/1h/0h/0"
@@ -360,20 +366,20 @@ generate_test_accounts() {
             elif [[ "$hdkeypath" =~ m/86h/1h/0h/0/ ]]; then
                 path_prefix="86h/1h/0h/0"
             fi
-            
+
             local desc=$(echo "$descriptors" | jq -r --arg prefix "$path_prefix" '.descriptors[] | select(.desc | contains($prefix)) | select(.desc | test("/0/\\*")) | .desc' | head -1)
-            
+
             if [[ -n "$desc" ]]; then
                 log "Found descriptor for seller: $desc"
                 local base_xpriv=""
                 base_xpriv=$(echo "$desc" | grep -oE 'tprv[a-zA-Z0-9]+')
-                
+
                 if [[ -z "$base_xpriv" ]]; then
                     base_xpriv=$(echo "$desc" | sed -n 's/.*(\([^)]*\)).*/\1/p' | grep -oE 'tprv[a-zA-Z0-9]+')
                 fi
-                
+
                 log "Extracted base_xpriv: ${base_xpriv:0:10}... hdkeypath: $hdkeypath"
-                
+
                 if [[ -n "$base_xpriv" && -n "$hdkeypath" ]]; then
                     log "Attempting to derive seller private key..."
                     if seller_btc_privkey=$("$derive_binary" "$base_xpriv" "$hdkeypath" 2>&1); then
@@ -394,35 +400,36 @@ generate_test_accounts() {
     else
         error "Failed to generate seller Bitcoin address"
     fi
-    
+
     log "Funding buyer Bitcoin address..."
     bitcoin-cli -rpcconnect=bitcoin -rpcport=18443 -rpcuser=user -rpcpassword=password -regtest generatetoaddress 5 "$buyer_btc_address" > /dev/null
     bitcoin-cli -rpcconnect=bitcoin -rpcport=18443 -rpcuser=user -rpcpassword=password -regtest generatetoaddress 1 "$(bitcoin-cli -rpcconnect=bitcoin -rpcport=18443 -rpcuser=user -rpcpassword=password -regtest getnewaddress)" > /dev/null
-    
+
     local buyer_eth_privkey="0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
     local buyer_eth_address="0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
     local seller_eth_privkey="0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
     local seller_eth_address="0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
-    
+
     local contract_address="N/A"
-    if [ -f "$SETUP_DIR/agent/eth/contract_address.txt" ]; then
-        contract_address=$(cat "$SETUP_DIR/agent/eth/contract_address.txt")
+    if [ -f "$SWAP_DIR/contract_address.txt" ]; then
+        contract_address=$(cat "$SWAP_DIR/contract_address.txt")
     fi
-    
+
     log "Creating demo configuration..."
 
     local program_id="11111111111111111111111111111112"
-    if [ -f "$SETUP_DIR/agent/sol/program_id.txt" ]; then
-        program_id=$(cat "$SETUP_DIR/agent/sol/program_id.txt")
-    elif [ -f "$SETUP_DIR/program_id.txt" ]; then
-        program_id=$(cat "$SETUP_DIR/program_id.txt")
+    if [ -f "$SWAP_DIR/program_id.txt" ]; then
+        program_id=$(cat "$SWAP_DIR/program_id.txt")
     fi
 
-    cat > "$SETUP_DIR/atomic_swap.sh" << EOF
+    # Ensure .swap/secrets directory exists
+    mkdir -p "$SWAP_DIR/secrets"
+
+    cat > "$SWAP_DIR/atomic_swap.sh" << EOF
 #!/bin/bash
 
 # Cross-Chain Atomic Swap Demo Configuration
-# Generated by setup.sh on $(date)
+# Generated by docker-setup.sh on $(date)
 
 # Bitcoin Configuration
 export BTC_RPC_URL="http://bitcoin:18443"
@@ -431,7 +438,7 @@ export BTC_RPC_PASSWORD="password"
 export BTC_NETWORK="regtest"
 export BTC_DATA_DIR="$BITCOIN_DATA_DIR"
 
-# Ethereum Configuration  
+# Ethereum Configuration
 export ETH_RPC_URL="http://ethereum:8545"
 export NFT_CONTRACT_ADDRESS="$contract_address"
 
@@ -446,7 +453,7 @@ export BUYER_BTC_ADDRESS="$buyer_btc_address"
 export BUYER_BTC_PUBKEY="$buyer_btc_pubkey"
 export BUYER_ETH_PRIVKEY="$buyer_eth_privkey"
 export BUYER_ETH_ADDRESS="$buyer_eth_address"
-export BUYER_SOL_KEYPAIR="buyer-keypair.json"
+export BUYER_SOL_KEYPAIR=".swap/keypairs/buyer.json"
 
 # Seller Keys
 export SELLER_BTC_PRIVKEY="$seller_btc_privkey"
@@ -454,7 +461,7 @@ export SELLER_BTC_PUBKEY="$seller_btc_pubkey"
 export SELLER_BTC_ADDRESS="$seller_btc_address"
 export SELLER_ETH_PRIVKEY="$seller_eth_privkey"
 export SELLER_ETH_ADDRESS="$seller_eth_address"
-export SELLER_SOL_KEYPAIR="seller-keypair.json"
+export SELLER_SOL_KEYPAIR=".swap/keypairs/seller.json"
 
 # Demo Parameters
 export BTC_AMOUNT="100000"  # 0.001 BTC in satoshis
@@ -472,7 +479,7 @@ lock_btc() {
     echo "Generating initial blocks and funding the buyer address..."
 
     bitcoin-cli -rpcconnect=bitcoin -rpcport=18443 -rpcuser=user -rpcpassword=password -regtest generatetoaddress 101 "$buyer_btc_address"
-    
+
     RUST_LOG=info ./target/release/client lock-btc \\
         --btc-rpc "\$BTC_RPC_URL" \\
         --btc-user "\$BTC_RPC_USER" \\
@@ -481,20 +488,21 @@ lock_btc() {
         --buyer-btc-key "\$BUYER_BTC_PRIVKEY" \\
         --seller-btc-pubkey "\$SELLER_BTC_PUBKEY" \\
         --btc-amount "\$BTC_AMOUNT" \\
-        --timeout "\$HTLC_TIMEOUT"
+        --timeout "\$HTLC_TIMEOUT" \\
+        --secret-output ".swap/secrets/swap.secret"
 }
 
 # Commit NFT with shared secret
 commit_for_mint() {
     local chain="\$1"
     local secret_hash="\$2"
-    
+
     if [ -z "\$chain" ] || [ -z "\$secret_hash" ]; then
         echo "Usage: commit_for_mint --chain <eth|sol> <SECRET_HASH>"
         echo "  or:  commit_for_mint <SECRET_HASH> --chain <eth|sol>"
         return 1
     fi
-    
+
     # Handle argument order flexibility
     if [ "\$chain" = "--chain" ]; then
         chain="\$2"
@@ -503,7 +511,7 @@ commit_for_mint() {
         secret_hash="\$1"
         chain="\$3"
     fi
-    
+
     case "\$chain" in
         "eth")
             RUST_LOG=info ./target/release/client commit-for-mint \\
@@ -540,24 +548,48 @@ commit_for_mint() {
 
 # Mint the NFT with shared secret
 mint_with_secret() {
-    local chain="\$1"
-    local secret="\$2"
-    
+    local chain=""
+    local secret=""
+
+    # Parse arguments
+    while [ \$# -gt 0 ]; do
+        case "\$1" in
+            --chain)
+                chain="\$2"
+                shift 2
+                ;;
+            --secret-file)
+                local secret_file="\$2"
+                if [ -z "\$secret_file" ]; then
+                    echo "Error: --secret-file requires a path argument"
+                    return 1
+                fi
+                if [ ! -f "\$secret_file" ]; then
+                    echo "Error: Secret file not found: \$secret_file"
+                    return 1
+                fi
+                secret=\$(grep "^SECRET=" "\$secret_file" | cut -d'=' -f2)
+                shift 2
+                ;;
+            *)
+                # Positional argument (secret or chain)
+                if [ -z "\$secret" ]; then
+                    secret="\$1"
+                elif [ -z "\$chain" ]; then
+                    chain="\$1"
+                fi
+                shift
+                ;;
+        esac
+    done
+
     if [ -z "\$chain" ] || [ -z "\$secret" ]; then
         echo "Usage: mint_with_secret --chain <eth|sol> <SECRET>"
         echo "  or:  mint_with_secret <SECRET> --chain <eth|sol>"
+        echo "  or:  mint_with_secret --chain <eth|sol> --secret-file .swap/secrets/swap.secret"
         return 1
     fi
-    
-    # Handle argument order flexibility
-    if [ "\$chain" = "--chain" ]; then
-        chain="\$2"
-        secret="\$3"
-    elif [ "\$secret" = "--chain" ]; then
-        secret="\$1"
-        chain="\$3"
-    fi
-    
+
     case "\$chain" in
         "eth")
             RUST_LOG=info ./target/release/client mint-with-secret \\
@@ -587,15 +619,38 @@ mint_with_secret() {
 
 # Claim bitcoin after secret reveal
 claim_btc() {
-    local secret="\$1"
-    local secret_hash="\$2"
-    local lock_txid="\$3"
-    
+    local secret=""
+    local secret_hash=""
+    local lock_txid=""
+
+    # Check if --secret-file is provided
+    if [ "\$1" = "--secret-file" ]; then
+        local secret_file="\$2"
+        if [ -z "\$secret_file" ]; then
+            echo "Error: --secret-file requires a path argument"
+            return 1
+        fi
+        if [ ! -f "\$secret_file" ]; then
+            echo "Error: Secret file not found: \$secret_file"
+            return 1
+        fi
+        # Parse the secret file (format: KEY=VALUE per line)
+        secret=\$(grep "^SECRET=" "\$secret_file" | cut -d'=' -f2)
+        secret_hash=\$(grep "^SECRET_HASH=" "\$secret_file" | cut -d'=' -f2)
+        lock_txid=\$(grep "^LOCK_TXID=" "\$secret_file" | cut -d'=' -f2)
+    else
+        # Positional arguments
+        secret="\$1"
+        secret_hash="\$2"
+        lock_txid="\$3"
+    fi
+
     if [ -z "\$secret" ] || [ -z "\$secret_hash" ] || [ -z "\$lock_txid" ]; then
         echo "Usage: claim_btc <SECRET> <SECRET_HASH> <LOCK_TXID>"
+        echo "  or:  claim_btc --secret-file .swap/secrets/swap.secret"
         return 1
     fi
-    
+
     RUST_LOG=info ./target/release/client claim-btc \\
         --btc-rpc "\$BTC_RPC_URL" \\
         --btc-user "\$BTC_RPC_USER" \\
@@ -620,11 +675,15 @@ echo ""
 echo "Bitcoin RPC: \$BTC_RPC_URL"
 echo "Ethereum RPC: \$ETH_RPC_URL"
 echo "NFT Contract: \$NFT_CONTRACT_ADDRESS"
+echo ""
+echo "Secrets directory: .swap/secrets/"
+echo "Keypairs directory: .swap/keypairs/"
 EOF
-    
-    chmod +x "$SETUP_DIR/atomic_swap.sh"
-    
+
+    chmod +x "$SWAP_DIR/atomic_swap.sh"
+
     success "Test accounts and configuration created!"
+    log "To load the configuration: source .swap/atomic_swap.sh"
 }
 
 verify_setup() {
@@ -636,7 +695,7 @@ verify_setup() {
     else
         warn "Bitcoin verification failed"
     fi
-    
+
     if curl -s -X POST -H 'Content-Type: application/json' \
         --data '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' \
         http://ethereum:8545 &>/dev/null; then
@@ -644,12 +703,12 @@ verify_setup() {
     else
         warn "Ethereum node not responding"
     fi
-    
-    if [ -f "$SETUP_DIR/agent/eth/contract_address.txt" ]; then
-        local contract_address=$(cat "$SETUP_DIR/agent/eth/contract_address.txt")
+
+    if [ -f "$SWAP_DIR/contract_address.txt" ]; then
+        local contract_address=$(cat "$SWAP_DIR/contract_address.txt")
         log "NFT Contract: $contract_address deployed"
     else
-        warn "Contract address file not found"
+        warn "Contract address file not found in .swap/"
     fi
 
     if solana cluster-version --url http://solana:8899 &>/dev/null; then
@@ -657,19 +716,25 @@ verify_setup() {
     else
         warn "Solana test validator not responding"
     fi
-    
-    if [ -f "buyer-keypair.json" ] && [ -f "seller-keypair.json" ]; then
-        log "Solana keypairs: Generated successfully"
+
+    if [ -f "$SWAP_DIR/keypairs/buyer.json" ] && [ -f "$SWAP_DIR/keypairs/seller.json" ]; then
+        log "Solana keypairs: Generated successfully in .swap/keypairs/"
     else
-        warn "Solana keypair files not found"
+        warn "Solana keypair files not found in .swap/keypairs/"
     fi
-    
+
     if [ -f "$SETUP_DIR/target/release/atomic-swap" ] || [ -f "$SETUP_DIR/target/release/client" ]; then
         log "Rust client: Built successfully"
     else
         warn "Rust client binary not found, but build may have completed"
     fi
-    
+
+    if [ -f "$SWAP_DIR/atomic_swap.sh" ]; then
+        log "Configuration: .swap/atomic_swap.sh generated"
+    else
+        warn "Configuration file not found in .swap/"
+    fi
+
     success "Setup verification completed!"
 }
 
@@ -682,11 +747,13 @@ print_usage_instructions() {
     echo -e "${BLUE}To run the demo:${NC}"
     echo
     echo -e "1. ${YELLOW}Source the demo configuration:${NC}"
-    echo "   source ./atomic_swap.sh"
+    echo "   source .swap/atomic_swap.sh"
     echo
     echo -e "2. ${YELLOW}Follow the rest of the demo guide${NC}"
     echo
-    echo -e "${BLUE}Configuration saved to:${NC} atomic_swap.sh"
+    echo -e "${BLUE}Configuration saved to:${NC} .swap/atomic_swap.sh"
+    echo -e "${BLUE}Keypairs saved to:${NC} .swap/keypairs/"
+    echo -e "${BLUE}Secrets will be saved to:${NC} .swap/secrets/"
     echo -e "${BLUE}Setup log saved to:${NC} setup.log"
     echo -e "${BLUE}Bitcoin data directory:${NC} $BITCOIN_DATA_DIR"
     echo
@@ -694,11 +761,11 @@ print_usage_instructions() {
     echo "  > Bitcoin regtest: http://bitcoin:18443"
     echo "  > Ethereum (Hardhat): http://ethereum:8545"
     echo "  > Solana test validator: http://solana:8899"
-    if [ -f "$SETUP_DIR/agent/eth/contract_address.txt" ]; then
-        echo "   Ethereum NFT contract addr: $(cat "$SETUP_DIR/agent/eth/contract_address.txt")"
+    if [ -f "$SWAP_DIR/contract_address.txt" ]; then
+        echo "   Ethereum NFT contract addr: $(cat "$SWAP_DIR/contract_address.txt")"
     fi
-    if [ -f "$SETUP_DIR/agent/sol/program_id.txt" ]; then
-        echo "   Solana NFT program ID: $(cat "$SETUP_DIR/agent/sol/program_id.txt")"
+    if [ -f "$SWAP_DIR/program_id.txt" ]; then
+        echo "   Solana NFT program ID: $(cat "$SWAP_DIR/program_id.txt")"
     fi
     echo
 }
@@ -716,7 +783,7 @@ main() {
 
     generate_test_accounts
     verify_setup
-    
+
     success "Setup completed successfully!"
     print_usage_instructions
 }

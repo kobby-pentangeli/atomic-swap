@@ -17,17 +17,17 @@ generate_test_accounts() {
     if buyer_btc_address=$(bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" getnewaddress "buyer" 2>/dev/null); then
         if addr_info=$(bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" getaddressinfo "$buyer_btc_address" 2>/dev/null); then
             buyer_btc_pubkey=$(echo "$addr_info" | jq -r .pubkey)
-            
+
             # Get derivation path
             local hdkeypath=$(echo "$addr_info" | jq -r .hdkeypath)
-            
+
             # Get the wallet's master private key directly
             local wallet_info=$(bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" getwalletinfo)
             local wallet_name=$(echo "$wallet_info" | jq -r .walletname)
-            
+
             # Get descriptors with private keys
             local descriptors=$(bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" listdescriptors true)
-            
+
             local path_prefix=""
             if [[ "$hdkeypath" =~ m/84h/1h/0h/0/ ]]; then
                 path_prefix="84h/1h/0h/0"
@@ -40,20 +40,20 @@ generate_test_accounts() {
             fi
 
             local desc=$(echo "$descriptors" | jq -r --arg prefix "$path_prefix" '.descriptors[] | select(.desc | contains($prefix)) | select(.desc | test("/0/\\*")) | .desc' | head -1)
-            
+
             if [[ -n "$desc" ]]; then
                 local base_xpriv=""
-                
+
                 base_xpriv=$(echo "$desc" | sed -n 's/.*(\[.*\]\([a-zA-Z0-9]*\)\/.*/\1/p')
-                
+
                 if [[ -z "$base_xpriv" ]]; then
                     base_xpriv=$(echo "$desc" | grep -oE 'tprv[a-zA-Z0-9]+')
                 fi
-                
+
                 if [[ -z "$base_xpriv" ]]; then
                     base_xpriv=$(echo "$desc" | sed -n 's/.*]\([^/]*\)\/.*/\1/p')
                 fi
-                
+
                 if [[ -n "$base_xpriv" && -n "$hdkeypath" ]]; then
                     if buyer_btc_privkey=$("$SETUP_DIR/target/release/derive_privkey" "$base_xpriv" "$hdkeypath" 2>&1); then
                         echo "Buyer private key derived successfully"
@@ -76,11 +76,11 @@ generate_test_accounts() {
     if seller_btc_address=$(bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" getnewaddress "seller" 2>/dev/null); then
         if addr_info=$(bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" getaddressinfo "$seller_btc_address" 2>/dev/null); then
             seller_btc_pubkey=$(echo "$addr_info" | jq -r .pubkey)
-            
+
             local hdkeypath=$(echo "$addr_info" | jq -r .hdkeypath)
-            
+
             local descriptors=$(bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" listdescriptors true)
-            
+
             local path_prefix=""
             if [[ "$hdkeypath" =~ m/84h/1h/0h/0/ ]]; then
                 path_prefix="84h/1h/0h/0"
@@ -91,17 +91,17 @@ generate_test_accounts() {
             elif [[ "$hdkeypath" =~ m/86h/1h/0h/0/ ]]; then
                 path_prefix="86h/1h/0h/0"
             fi
-            
+
             local desc=$(echo "$descriptors" | jq -r --arg prefix "$path_prefix" '.descriptors[] | select(.desc | contains($prefix)) | select(.desc | test("/0/\\*")) | .desc' | head -1)
-            
+
             if [[ -n "$desc" ]]; then
                 local base_xpriv=""
                 base_xpriv=$(echo "$desc" | grep -oE 'tprv[a-zA-Z0-9]+')
-                
+
                 if [[ -z "$base_xpriv" ]]; then
                     base_xpriv=$(echo "$desc" | sed -n 's/.*(\([^)]*\)).*/\1/p' | grep -oE 'tprv[a-zA-Z0-9]+')
                 fi
-                
+
                 if [[ -n "$base_xpriv" && -n "$hdkeypath" ]]; then
                     if seller_btc_privkey=$("$SETUP_DIR/target/release/derive_privkey" "$base_xpriv" "$hdkeypath" 2>&1); then
                         echo "Seller private key derived successfully"
@@ -120,31 +120,32 @@ generate_test_accounts() {
     else
         error "Failed to generate seller Bitcoin address"
     fi
-    
+
     log "Funding buyer Bitcoin address..."
     bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" generatetoaddress 5 "$buyer_btc_address" > /dev/null
     bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" generatetoaddress 1 "$(bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" getnewaddress)" > /dev/null
-    
+
     local buyer_eth_privkey="0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
     local buyer_eth_address="0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
     local seller_eth_privkey="0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
     local seller_eth_address="0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
-    
+
     local contract_address="N/A"
-    if [ -f "$SETUP_DIR/agent/eth/contract_address.txt" ]; then
-        contract_address=$(cat "$SETUP_DIR/agent/eth/contract_address.txt")
+    if [ -f "$SWAP_DIR/contract_address.txt" ]; then
+        contract_address=$(cat "$SWAP_DIR/contract_address.txt")
     fi
-    
+
     log "Creating demo configuration..."
 
     local program_id="11111111111111111111111111111112"
-    if [ -f "$SETUP_DIR/agent/sol/program_id.txt" ]; then
-        program_id=$(cat "$SETUP_DIR/agent/sol/program_id.txt")
-    elif [ -f "$SETUP_DIR/program_id.txt" ]; then
-        program_id=$(cat "$SETUP_DIR/program_id.txt")
+    if [ -f "$SWAP_DIR/program_id.txt" ]; then
+        program_id=$(cat "$SWAP_DIR/program_id.txt")
     fi
 
-    cat > "$SETUP_DIR/atomic_swap.sh" << EOF
+    # Ensure .swap directory exists
+    mkdir -p "$SWAP_DIR/secrets"
+
+    cat > "$SWAP_DIR/atomic_swap.sh" << EOF
 #!/bin/bash
 
 # Cross-Chain Atomic Swap Demo Configuration
@@ -157,7 +158,7 @@ export BTC_RPC_PASSWORD="password"
 export BTC_NETWORK="regtest"
 export BTC_DATA_DIR="$BITCOIN_DATA_DIR"
 
-# Ethereum Configuration  
+# Ethereum Configuration
 export ETH_RPC_URL="http://localhost:8545"
 export NFT_CONTRACT_ADDRESS="$contract_address"
 
@@ -172,7 +173,7 @@ export BUYER_BTC_ADDRESS="$buyer_btc_address"
 export BUYER_BTC_PUBKEY="$buyer_btc_pubkey"
 export BUYER_ETH_PRIVKEY="$buyer_eth_privkey"
 export BUYER_ETH_ADDRESS="$buyer_eth_address"
-export BUYER_SOL_KEYPAIR="buyer-keypair.json"
+export BUYER_SOL_KEYPAIR=".swap/keypairs/buyer.json"
 
 # Seller Keys
 export SELLER_BTC_PRIVKEY="$seller_btc_privkey"
@@ -180,7 +181,7 @@ export SELLER_BTC_PUBKEY="$seller_btc_pubkey"
 export SELLER_BTC_ADDRESS="$seller_btc_address"
 export SELLER_ETH_PRIVKEY="$seller_eth_privkey"
 export SELLER_ETH_ADDRESS="$seller_eth_address"
-export SELLER_SOL_KEYPAIR="seller-keypair.json"
+export SELLER_SOL_KEYPAIR=".swap/keypairs/seller.json"
 
 # Demo Parameters
 export BTC_AMOUNT="100000"  # 0.001 BTC in satoshis
@@ -198,7 +199,7 @@ lock_btc() {
     echo "Generating initial blocks and funding the buyer address..."
 
     bitcoin-cli -regtest -datadir="$BITCOIN_DATA_DIR" generatetoaddress 101 "$buyer_btc_address"
-    
+
     RUST_LOG=info ./target/release/client lock-btc \\
         --btc-rpc "\$BTC_RPC_URL" \\
         --btc-user "\$BTC_RPC_USER" \\
@@ -207,20 +208,21 @@ lock_btc() {
         --buyer-btc-key "\$BUYER_BTC_PRIVKEY" \\
         --seller-btc-pubkey "\$SELLER_BTC_PUBKEY" \\
         --btc-amount "\$BTC_AMOUNT" \\
-        --timeout "\$HTLC_TIMEOUT"
+        --timeout "\$HTLC_TIMEOUT" \\
+        --secret-output ".swap/secrets/swap.secret"
 }
 
 # Commit NFT with shared secret
 commit_for_mint() {
     local chain="\$1"
     local secret_hash="\$2"
-    
+
     if [ -z "\$chain" ] || [ -z "\$secret_hash" ]; then
         echo "Usage: commit_for_mint --chain <eth|sol> <SECRET_HASH>"
         echo "  or:  commit_for_mint <SECRET_HASH> --chain <eth|sol>"
         return 1
     fi
-    
+
     # Handle argument order flexibility
     if [ "\$chain" = "--chain" ]; then
         chain="\$2"
@@ -229,7 +231,7 @@ commit_for_mint() {
         secret_hash="\$1"
         chain="\$3"
     fi
-    
+
     case "\$chain" in
         "eth")
             RUST_LOG=info ./target/release/client commit-for-mint \\
@@ -266,24 +268,48 @@ commit_for_mint() {
 
 # Mint the NFT with shared secret
 mint_with_secret() {
-    local chain="\$1"
-    local secret="\$2"
-    
+    local chain=""
+    local secret=""
+
+    # Parse arguments
+    while [ \$# -gt 0 ]; do
+        case "\$1" in
+            --chain)
+                chain="\$2"
+                shift 2
+                ;;
+            --secret-file)
+                local secret_file="\$2"
+                if [ -z "\$secret_file" ]; then
+                    echo "Error: --secret-file requires a path argument"
+                    return 1
+                fi
+                if [ ! -f "\$secret_file" ]; then
+                    echo "Error: Secret file not found: \$secret_file"
+                    return 1
+                fi
+                secret=\$(grep "^SECRET=" "\$secret_file" | cut -d'=' -f2)
+                shift 2
+                ;;
+            *)
+                # Positional argument (secret or chain)
+                if [ -z "\$secret" ]; then
+                    secret="\$1"
+                elif [ -z "\$chain" ]; then
+                    chain="\$1"
+                fi
+                shift
+                ;;
+        esac
+    done
+
     if [ -z "\$chain" ] || [ -z "\$secret" ]; then
         echo "Usage: mint_with_secret --chain <eth|sol> <SECRET>"
         echo "  or:  mint_with_secret <SECRET> --chain <eth|sol>"
+        echo "  or:  mint_with_secret --chain <eth|sol> --secret-file .swap/secrets/swap.secret"
         return 1
     fi
-    
-    # Handle argument order flexibility
-    if [ "\$chain" = "--chain" ]; then
-        chain="\$2"
-        secret="\$3"
-    elif [ "\$secret" = "--chain" ]; then
-        secret="\$1"
-        chain="\$3"
-    fi
-    
+
     case "\$chain" in
         "eth")
             RUST_LOG=info ./target/release/client mint-with-secret \\
@@ -313,15 +339,38 @@ mint_with_secret() {
 
 # Claim bitcoin after secret reveal
 claim_btc() {
-    local secret="\$1"
-    local secret_hash="\$2"
-    local lock_txid="\$3"
-    
+    local secret=""
+    local secret_hash=""
+    local lock_txid=""
+
+    # Check if --secret-file is provided
+    if [ "\$1" = "--secret-file" ]; then
+        local secret_file="\$2"
+        if [ -z "\$secret_file" ]; then
+            echo "Error: --secret-file requires a path argument"
+            return 1
+        fi
+        if [ ! -f "\$secret_file" ]; then
+            echo "Error: Secret file not found: \$secret_file"
+            return 1
+        fi
+        # Parse the secret file (format: KEY=VALUE per line)
+        secret=\$(grep "^SECRET=" "\$secret_file" | cut -d'=' -f2)
+        secret_hash=\$(grep "^SECRET_HASH=" "\$secret_file" | cut -d'=' -f2)
+        lock_txid=\$(grep "^LOCK_TXID=" "\$secret_file" | cut -d'=' -f2)
+    else
+        # Positional arguments
+        secret="\$1"
+        secret_hash="\$2"
+        lock_txid="\$3"
+    fi
+
     if [ -z "\$secret" ] || [ -z "\$secret_hash" ] || [ -z "\$lock_txid" ]; then
         echo "Usage: claim_btc <SECRET> <SECRET_HASH> <LOCK_TXID>"
+        echo "  or:  claim_btc --secret-file .swap/secrets/swap.secret"
         return 1
     fi
-    
+
     RUST_LOG=info ./target/release/client claim-btc \\
         --seller-btc-key "\$SELLER_BTC_PRIVKEY" \\
         --buyer-btc-pubkey "\$BUYER_BTC_PUBKEY" \\
@@ -335,7 +384,7 @@ claim_btc() {
 # Graceful shutdown
 stop_services() {
     echo "Stopping all demo services..."
-    
+
     # Stop Bitcoin
     if bitcoin-cli -regtest -datadir="\$BTC_DATA_DIR" stop 2>/dev/null; then
         echo "Bitcoin stopped"
@@ -344,27 +393,27 @@ stop_services() {
         # Force kill if needed
         pkill -f "bitcoind.*regtest" 2>/dev/null || true
     fi
-    
+
     # Stop Hardhat
-    if [ -f "$SETUP_DIR/agent/eth/hardhat.pid" ]; then
-        local hardhat_pid=\$(cat "$SETUP_DIR/agent/eth/hardhat.pid")
-        if ps -p "$hardhat_pid" > /dev/null 2>&1; then
-            kill "$hardhat_pid" && echo "Hardhat stopped"
+    if [ -f "$SWAP_DIR/hardhat.pid" ]; then
+        local hardhat_pid=\$(cat "$SWAP_DIR/hardhat.pid")
+        if ps -p "\$hardhat_pid" > /dev/null 2>&1; then
+            kill "\$hardhat_pid" && echo "Hardhat stopped"
         fi
-        rm -f "$SETUP_DIR/agent/eth/hardhat.pid"
+        rm -f "$SWAP_DIR/hardhat.pid"
     fi
 
     # Stop Solana
-    if [ -f "$SETUP_DIR/agent/sol/solana.pid" ]; then
-        local solana_pid=$(cat "$SETUP_DIR/agent/sol/solana.pid")
-        if ps -p "$solana_pid" > /dev/null 2>&1; then
-            kill "$solana_pid" && echo "Solana test validator stopped"
+    if [ -f "$SWAP_DIR/solana.pid" ]; then
+        local solana_pid=\$(cat "$SWAP_DIR/solana.pid")
+        if ps -p "\$solana_pid" > /dev/null 2>&1; then
+            kill "\$solana_pid" && echo "Solana test validator stopped"
         fi
-        rm -f "$SETUP_DIR/agent/sol/solana.pid"
+        rm -f "$SWAP_DIR/solana.pid"
     else
         pkill -f "solana-test-validator" 2>/dev/null && echo "Solana test validator stopped" || true
     fi
-    
+
     echo "All services stopped"
 }
 
@@ -379,9 +428,13 @@ echo ""
 echo "Bitcoin RPC: \$BTC_RPC_URL"
 echo "Ethereum RPC: \$ETH_RPC_URL"
 echo "NFT Contract: \$NFT_CONTRACT_ADDRESS"
+echo ""
+echo "Secrets directory: .swap/secrets/"
+echo "Keypairs directory: .swap/keypairs/"
 EOF
-    
-    chmod +x "$SETUP_DIR/atomic_swap.sh"
-    
+
+    chmod +x "$SWAP_DIR/atomic_swap.sh"
+
     success "Test accounts and configuration created!"
+    log "To load the configuration: source .swap/atomic_swap.sh"
 }

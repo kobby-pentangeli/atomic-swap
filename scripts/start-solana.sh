@@ -17,7 +17,7 @@ METAPLEX_PROGRAM="/app/metaplex.so"
 # Download Metaplex program if not exists or is empty
 if [ ! -f "$METAPLEX_PROGRAM" ] || [ ! -s "$METAPLEX_PROGRAM" ]; then
     echo "[INFO] Downloading Metaplex Token Metadata program from mainnet..."
-    
+
     # Try with timeout to avoid hanging
     if timeout 60 solana program dump -u mainnet-beta "$METAPLEX_PROGRAM_ID" "$METAPLEX_PROGRAM"; then
         echo "[INFO] Metaplex program downloaded successfully"
@@ -30,7 +30,7 @@ if [ ! -f "$METAPLEX_PROGRAM" ] || [ ! -s "$METAPLEX_PROGRAM" ]; then
             exit 1
         fi
     fi
-    
+
     # Verify download
     if [ ! -f "$METAPLEX_PROGRAM" ] || [ ! -s "$METAPLEX_PROGRAM" ]; then
         echo "[ERROR] Metaplex program file is missing or empty after download"

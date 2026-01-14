@@ -23,7 +23,7 @@ install_jq() {
 
 install_bitcoin_core() {
     warn "Bitcoin Core not found. Attempting to install..."
-    
+
     if command -v apt-get &> /dev/null; then
         log "Installing Bitcoin Core via apt-get..."
         sudo apt-get update && sudo apt-get install -y bitcoind
@@ -37,19 +37,19 @@ install_bitcoin_core() {
 
 check_prerequisites() {
     log "Checking prerequisites..."
-    
+
     if ! check_command "cargo"; then
         error "Rust/Cargo not found. Please install: https://rustup.rs/"
     fi
-    
+
     if ! check_command "node"; then
         error "Node.js not found. Please install Node.js 18+: https://nodejs.org/"
     fi
-    
+
     if ! check_command "npm"; then
         error "npm not found. Please install Node.js with npm."
     fi
-    
+
     if ! check_command "jq"; then
         install_jq
     fi
@@ -57,6 +57,6 @@ check_prerequisites() {
     if ! check_command "bitcoind" || ! check_command "bitcoin-cli"; then
         install_bitcoin_core
     fi
-    
+
     success "All prerequisites found!"
 }
