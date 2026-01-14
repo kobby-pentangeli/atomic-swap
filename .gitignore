@@ -20,10 +20,8 @@ typechain-types/
 # OS
 .DS_Store
 
-# Demo output
-.bitcoin
+# Local development runtime files
+.swap/
+.bitcoin/
+.solana-ledger/
 *.log
-.solana-ledger
-buyer-keypair.json
-seller-keypair.json
-atomic_swap.sh
