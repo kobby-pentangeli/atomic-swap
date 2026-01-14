@@ -1,8 +1,11 @@
+use std::path::PathBuf;
+
 use bitcoin::{Address as BtcAddress, Network, Txid};
 use ethers::core::types::{Address as EthAddress, U256};
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Chain {
     Ethereum,
     Solana,
@@ -50,6 +53,8 @@ pub struct LockBtcArgs {
     pub seller_btc_pubkey: String,
     pub btc_amount: u64,
     pub timeout: u32,
+    /// Optional file path to write the generated secret.
+    pub secret_output_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]

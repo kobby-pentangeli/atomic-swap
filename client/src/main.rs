@@ -1,7 +1,10 @@
-use anyhow::{Context, Result};
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand};
 
 pub mod btc;
+pub mod config;
 pub mod eth;
 pub mod execute;
 pub mod sol;
@@ -52,6 +55,9 @@ enum Commands {
         /// HTLC timeout in blocks
         #[arg(long, default_value = "144")] // ~24 hours on Bitcoin
         timeout: u32,
+        /// File path to securely write the generated secret (optional)
+        #[arg(long)]
+        secret_output: Option<PathBuf>,
     },
 
     /// Seller commits NFT after buyer locks Bitcoin
@@ -141,9 +147,12 @@ enum Commands {
         program_id: Option<String>,
 
         // Common fields
-        /// Shared secret (hex)
-        #[arg(long)]
-        secret: String,
+        /// Shared secret (hex, mutually exclusive with --secret-file)
+        #[arg(long, conflicts_with = "secret_file")]
+        secret: Option<String>,
+        /// File containing the secret (mutually exclusive with --secret)
+        #[arg(long, conflicts_with = "secret")]
+        secret_file: Option<PathBuf>,
         /// Token ID to mint
         #[arg(long)]
         token_id: u64,
@@ -169,15 +178,18 @@ enum Commands {
         /// Buyer's Bitcoin public key (hex)
         #[arg(long)]
         buyer_btc_pubkey: String,
-        /// Secret revealed from Ethereum (hex)
+        /// Secret revealed from Ethereum (hex, mutually exclusive with --secret-file)
+        #[arg(long, conflicts_with = "secret_file")]
+        secret: Option<String>,
+        /// File containing the secret (mutually exclusive with --secret)
+        #[arg(long, conflicts_with = "secret")]
+        secret_file: Option<PathBuf>,
+        /// Secret hash (hex, for verification; optional if using --secret-file)
         #[arg(long)]
-        secret: String,
-        /// Secret hash (hex, for verification)
+        secret_hash: Option<String>,
+        /// Bitcoin transaction ID of the lock (optional if using --secret-file)
         #[arg(long)]
-        secret_hash: String,
-        /// Bitcoin transaction ID of the lock
-        #[arg(long)]
-        lock_txid: String,
+        lock_txid: Option<String>,
         /// Output index in the lock transaction
         #[arg(long, default_value = "0")]
         lock_vout: u32,
@@ -246,6 +258,7 @@ async fn main() -> Result<()> {
             seller_btc_pubkey,
             btc_amount,
             timeout,
+            secret_output,
         } => {
             let args = LockBtcArgs {
                 btc_rpc,
@@ -256,6 +269,7 @@ async fn main() -> Result<()> {
                 seller_btc_pubkey,
                 btc_amount,
                 timeout,
+                secret_output_file: secret_output,
             };
 
             execute::lock_bitcoin(args)
@@ -315,7 +329,7 @@ async fn main() -> Result<()> {
                         || args.seller_eth_key.is_none()
                         || args.nft_contract.is_none()
                     {
-                        return Err(anyhow::anyhow!(
+                        return Err(anyhow!(
                             "For Ethereum: --eth-rpc, --seller-eth-key, and --nft-contract are required"
                         ));
                     }
@@ -328,7 +342,7 @@ async fn main() -> Result<()> {
                         || args.name.is_none()
                         || args.symbol.is_none()
                     {
-                        return Err(anyhow::anyhow!(
+                        return Err(anyhow!(
                             "For Solana: --sol-rpc, --sol-ws, --seller-sol-keypair, --program-id, --name, and --symbol are required"
                         ));
                     }
@@ -348,11 +362,14 @@ async fn main() -> Result<()> {
             buyer_sol_keypair,
             program_id,
             secret,
+            secret_file,
             token_id,
         } => {
             let chain = chain
                 .parse::<Chain>()
                 .context("Invalid chain specification")?;
+
+            let secret_bytes = resolve_secret(secret, secret_file)?;
 
             let args = MintWithSecretArgs {
                 chain: chain.clone(),
@@ -369,7 +386,7 @@ async fn main() -> Result<()> {
                 buyer_sol_keypair,
                 program_id,
                 // Common fields
-                secret: decode_hex_secret(&secret)?,
+                secret: secret_bytes,
                 token_id,
             };
 
@@ -379,7 +396,7 @@ async fn main() -> Result<()> {
                         || args.buyer_eth_key.is_none()
                         || args.nft_contract.is_none()
                     {
-                        return Err(anyhow::anyhow!(
+                        return Err(anyhow!(
                             "For Ethereum: --eth-rpc, --buyer-eth-key, and --nft-contract are required"
                         ));
                     }
@@ -390,7 +407,7 @@ async fn main() -> Result<()> {
                         || args.buyer_sol_keypair.is_none()
                         || args.program_id.is_none()
                     {
-                        return Err(anyhow::anyhow!(
+                        return Err(anyhow!(
                             "For Solana: --sol-rpc, --sol-ws, --buyer-sol-keypair, and --program-id are required"
                         ));
                     }
@@ -408,6 +425,7 @@ async fn main() -> Result<()> {
             seller_btc_key,
             buyer_btc_pubkey,
             secret,
+            secret_file,
             secret_hash,
             lock_txid,
             lock_vout,
@@ -415,6 +433,28 @@ async fn main() -> Result<()> {
             destination,
         } => {
             let network = btc::utils::parse_network(&btc_network)?;
+
+            // Resolve secret from either --secret or --secret-file
+            let (secret_bytes, file_secret_hash, file_lock_txid) =
+                resolve_secret_with_metadata(secret, secret_file.clone())?;
+
+            let final_secret_hash = secret_hash
+                .map(|h| decode_hex_hash(&h, "secret hash"))
+                .transpose()?
+                .or(file_secret_hash)
+                .ok_or_else(|| {
+                    anyhow!("Secret hash required (use --secret-hash or provide via --secret-file)")
+                })?;
+
+            let final_lock_txid = lock_txid
+                .map(|s| s.parse())
+                .transpose()
+                .context("Invalid lock transaction ID")?
+                .or(file_lock_txid)
+                .ok_or_else(|| {
+                    anyhow!("Lock txid required (use --lock-txid or provide via --secret-file)")
+                })?;
+
             let args = ClaimBtcArgs {
                 btc_rpc,
                 btc_user,
@@ -422,9 +462,9 @@ async fn main() -> Result<()> {
                 btc_network: network,
                 seller_btc_key,
                 buyer_btc_pubkey,
-                secret: decode_hex_secret(&secret)?,
-                secret_hash: decode_hex_hash(&secret_hash, "secret hash")?,
-                lock_txid: lock_txid.parse().context("Invalid lock transaction ID")?,
+                secret: secret_bytes,
+                secret_hash: final_secret_hash,
+                lock_txid: final_lock_txid,
                 lock_vout,
                 timeout,
                 destination: destination
@@ -474,7 +514,7 @@ async fn main() -> Result<()> {
                         || args.caller_eth_key.is_none()
                         || args.nft_contract.is_none()
                     {
-                        return Err(anyhow::anyhow!(
+                        return Err(anyhow!(
                             "For Ethereum: --eth-rpc, --caller-eth-key, and --nft-contract are required"
                         ));
                     }
@@ -485,7 +525,7 @@ async fn main() -> Result<()> {
                         || args.caller_sol_keypair.is_none()
                         || args.program_id.is_none()
                     {
-                        return Err(anyhow::anyhow!(
+                        return Err(anyhow!(
                             "For Solana: --sol-rpc, --sol-ws, --caller-sol-keypair, and --program-id are required"
                         ));
                     }
@@ -502,7 +542,7 @@ fn decode_hex_hash(hex_str: &str, field_name: &str) -> Result<[u8; 32]> {
         hex::decode(hex_str).with_context(|| format!("Invalid hex encoding for {field_name}"))?;
 
     bytes.clone().try_into().map_err(|_| {
-        anyhow::anyhow!(
+        anyhow!(
             "Invalid {field_name} length: expected 32 bytes, got {}",
             bytes.len()
         )
@@ -511,6 +551,86 @@ fn decode_hex_hash(hex_str: &str, field_name: &str) -> Result<[u8; 32]> {
 
 fn decode_hex_secret(hex_str: &str) -> Result<[u8; 32]> {
     decode_hex_hash(hex_str, "secret")
+}
+
+/// Resolves a secret from either a direct hex string or a file.
+fn resolve_secret(secret: Option<String>, secret_file: Option<PathBuf>) -> Result<[u8; 32]> {
+    match (secret, secret_file) {
+        (Some(s), None) => decode_hex_secret(&s),
+        (None, Some(path)) => {
+            let (secret_bytes, _, _) = parse_secret_file(&path)?;
+            Ok(secret_bytes)
+        }
+        (None, None) => Err(anyhow!("Either --secret or --secret-file must be provided")),
+        (Some(_), Some(_)) => Err(anyhow!("--secret and --secret-file are mutually exclusive")),
+    }
+}
+
+/// Secret file data containing the secret and optional metadata.
+type SecretFileData = ([u8; 32], Option<[u8; 32]>, Option<bitcoin::Txid>);
+
+/// Resolves a secret and optional metadata from either a direct hex string or a file.
+fn resolve_secret_with_metadata(
+    secret: Option<String>,
+    secret_file: Option<PathBuf>,
+) -> Result<SecretFileData> {
+    match (secret, secret_file) {
+        (Some(s), None) => Ok((decode_hex_secret(&s)?, None, None)),
+        (None, Some(path)) => {
+            let (secret_bytes, secret_hash, lock_txid) = parse_secret_file(&path)?;
+            Ok((secret_bytes, secret_hash, lock_txid))
+        }
+        (None, None) => Err(anyhow!("Either --secret or --secret-file must be provided")),
+        (Some(_), Some(_)) => Err(anyhow!("--secret and --secret-file are mutually exclusive")),
+    }
+}
+
+/// Parses a secret file in the format generated by lock_bitcoin.
+///
+/// The file format is:
+/// ```text
+/// SECRET=<hex>
+/// SECRET_HASH=<hex>
+/// LOCK_TXID=<txid>
+/// ```
+fn parse_secret_file(path: &Path) -> Result<SecretFileData> {
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("Failed to read secret file: {}", path.display()))?;
+
+    let mut secret: Option<[u8; 32]> = None;
+    let mut secret_hash: Option<[u8; 32]> = None;
+    let mut lock_txid: Option<bitcoin::Txid> = None;
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with('#') || line.is_empty() {
+            continue;
+        }
+
+        if let Some((key, value)) = line.split_once('=') {
+            match key.trim() {
+                "SECRET" => {
+                    secret = Some(decode_hex_secret(value.trim())?);
+                }
+                "SECRET_HASH" => {
+                    secret_hash = Some(decode_hex_hash(value.trim(), "secret hash")?);
+                }
+                "LOCK_TXID" => {
+                    lock_txid = Some(
+                        value
+                            .trim()
+                            .parse()
+                            .context("Invalid LOCK_TXID in secret file")?,
+                    );
+                }
+                _ => {} // Ignore unknown keys
+            }
+        }
+    }
+
+    let secret = secret.ok_or_else(|| anyhow!("SECRET not found in file: {}", path.display()))?;
+
+    Ok((secret, secret_hash, lock_txid))
 }
 
 #[cfg(test)]

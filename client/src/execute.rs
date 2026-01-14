@@ -10,11 +10,15 @@
 //! Additionally, it provides a cancellation mechanism:
 //! - Cancel NFT commitment (seller only before timeout, anyone after timeout)
 
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anchor_client::solana_sdk::signature::read_keypair_file;
 use anyhow::{Context, Result, anyhow};
-use bitcoin::{Amount, PublicKey};
+use bitcoin::{Amount, PublicKey, Txid};
 use bitcoincore_rpc::Auth;
 use btc_htlc::{Contract as BtcContract, HtlcParams};
 use ethers::types::{H256, U256};
@@ -35,15 +39,17 @@ const MINT_AVAILABILITY_TIMEOUT: Duration = Duration::from_secs(120);
 /// Interval between mint availability checks.
 const MINT_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 
+/// Default directory for swap secrets.
+const DEFAULT_SECRETS_DIR: &str = ".swap/secrets";
+
+/// Default secret file name.
+const DEFAULT_SECRET_FILE: &str = "swap.secret";
+
 /// Locks Bitcoin in an HTLC contract.
 ///
 /// This is the first step of the atomic swap. The buyer generates a secret,
 /// creates its hash, and locks Bitcoin that can be claimed by the seller
 /// only if they know the secret.
-///
-/// # Returns
-///
-/// The secret and its hash are logged for use in subsequent steps.
 pub fn lock_bitcoin(args: LockBtcArgs) -> Result<()> {
     info!("Executing Bitcoin HTLC");
 
@@ -51,7 +57,7 @@ pub fn lock_bitcoin(args: LockBtcArgs) -> Result<()> {
     let seller_pubkey = utils::validate_btc_pubkey(&args.seller_btc_pubkey, "seller")?;
     let buyer_pubkey = PublicKey::from(buyer_keypair.public_key());
 
-    let r_secret_hex = btc_htlc::generate_random_secret_hex(); // for now!
+    let r_secret_hex = btc_htlc::generate_random_secret_hex();
     let secret_bytes = btc_htlc::hex_to_secret(&r_secret_hex)?;
     let secret_hash = btc_htlc::hash_secret(&secret_bytes);
 
@@ -78,7 +84,6 @@ pub fn lock_bitcoin(args: LockBtcArgs) -> Result<()> {
         .context("Failed to initialize Bitcoin client")?;
 
     info!("Initiating Bitcoin lock transaction");
-
     let amount = Amount::from_sat(args.btc_amount);
 
     let lock_txid = btc_client
@@ -91,13 +96,17 @@ pub fn lock_bitcoin(args: LockBtcArgs) -> Result<()> {
         htlc_address = %btc_contract.address(),
         "Bitcoin funds locked successfully"
     );
-
     info!("Waiting for seller NFT commitment");
 
-    // We log this for the demo
-    info!("SECRET (hex): {}", hex::encode(secret_bytes));
+    debug!(secret = %hex::encode(secret_bytes), "Generated secret");
     info!("SECRET_HASH: {}", hex::encode(secret_hash));
     info!("LOCK_TXID: {lock_txid}");
+
+    let secret_file = args
+        .secret_output_file
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_SECRETS_DIR).join(DEFAULT_SECRET_FILE));
+    write_secret_to_file(&secret_file, &secret_bytes, &secret_hash, &lock_txid)?;
+    info!(path = %secret_file.display(), "Secret written to file");
 
     Ok(())
 }
@@ -448,7 +457,7 @@ pub fn claim_bitcoin(args: ClaimBtcArgs) -> Result<()> {
 
     let computed_hash = Sha256::digest(args.secret);
     if *computed_hash != args.secret_hash {
-        return Err(anyhow::anyhow!(
+        return Err(anyhow!(
             "Secret verification failed: computed hash {} doesn't match provided hash {}",
             hex::encode(computed_hash),
             hex::encode(args.secret_hash)
@@ -485,7 +494,7 @@ pub fn claim_bitcoin(args: ClaimBtcArgs) -> Result<()> {
     let btc_client = BtcClient::new(&args.btc_rpc, auth, args.btc_network, seller_keypair)
         .context("Failed to initialize Bitcoin client")?;
 
-    let claim_tx = btc_client
+    let claim_txid = btc_client
         .claim_funds(
             &btc_contract,
             &args.secret,
@@ -496,12 +505,46 @@ pub fn claim_bitcoin(args: ClaimBtcArgs) -> Result<()> {
         .context("Failed to claim Bitcoin funds")?;
 
     info!(
-        claim_txid = %claim_tx,
+        claim_txid = %claim_txid,
         from_htlc = %format!("{}:{}", args.lock_txid, args.lock_vout),
         destination = ?args.destination.as_ref().map(|d| d.to_string()).unwrap_or_else(|| "seller wallet".to_string()),
         "Bitcoin claimed successfully"
     );
 
     info!("Cross-chain atomic swap fully completed. All parties have received their assets");
+    Ok(())
+}
+
+/// Writes the generated secret and related data to a file with restricted permissions.
+///
+/// The file is created with mode 0600 (owner read/write only) to protect the secret.
+/// The format is a simple key-value text file for easy parsing.
+fn write_secret_to_file(
+    path: &Path,
+    secret: &[u8; 32],
+    secret_hash: &[u8; 32],
+    lock_txid: &Txid,
+) -> Result<()> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
+    }
+
+    // Create file with restricted permissions (Unix only)
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
+        .with_context(|| format!("Failed to create secret file: {}", path.display()))?;
+
+    writeln!(file, "# Atomic Swap Secret File")?;
+    writeln!(file, "SECRET={}", hex::encode(secret))?;
+    writeln!(file, "SECRET_HASH={}", hex::encode(secret_hash))?;
+    writeln!(file, "LOCK_TXID={lock_txid}")?;
+
     Ok(())
 }

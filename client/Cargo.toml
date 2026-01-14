@@ -30,13 +30,14 @@ thiserror = { workspace = true }
 anyhow = "1.0"
 bitcoin = { version = "0.32", features = ["serde", "rand"] }
 bitcoincore-rpc = "0.19"
-chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.0", features = ["derive"] }
+dotenvy = "0.15"
 ethers = "2.0"
 serde_json = "1.0"
 tokio = { version = "1.0", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+zeroize = { version = "1.8", features = ["derive"] }
 
 anchor-client = "0.32.1"
 anchor-lang = "0.32.1"
