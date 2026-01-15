@@ -2,14 +2,14 @@
 
 A cross-chain atomic swap system where Bitcoin payment unlocks NFT minting on Ethereum or Solana through shared secrets using Hash Time Locked Contracts (HTLC).
 
-**⚠️ Warning:** This is experimental software. Please do not use with real funds without thorough testing and security audit.
+**Warning:** This is experimental software. Please do not use with real funds without thorough testing and security audit.
 
 ## Overview
 
 This system enables trustless atomic swaps between Bitcoin and Ethereum/Solana NFTs:
 
 1. **Buyer locks Bitcoin** in an HTLC using a secret hash
-2. **Seller commits NFT** on Ethereum or Solana using the same secret hash  
+2. **Seller commits NFT** on Ethereum or Solana using the same secret hash
 3. **Buyer reveals secret** to mint the NFT on Ethereum or Solana
 4. **Seller claims Bitcoin** using the revealed secret from Ethereum or Solana
 
@@ -23,7 +23,7 @@ You can run the demo either locally or in a dockerized environment:
 ### Docker Setup (Recommended)
 
 Prerequisites: **Docker** 20.10+ and **Docker Compose** 2.0+
-Installing Docker Desktop automically gives Docker Compose as well. [Install here](https://www.docker.com/).
+Installing Docker Desktop automatically gives Docker Compose as well. [Install here](https://www.docker.com/).
 
 ```bash
 # Clone repo
@@ -36,7 +36,7 @@ docker-compose up --build
 
 This will:
 
-- Build all blockchain services in containers  
+- Build all blockchain services in containers
 - Start Bitcoin regtest, Ethereum (Hardhat), and Solana test validator
 - Build the Rust client and deploy all contracts
 - Generate funded test accounts and demo configuration
@@ -51,7 +51,7 @@ After `docker-compose up` shows "Setup complete! Container ready for demo.", ope
 docker exec -it xchain-app bash
 
 # Load the generated configuration
-source ./atomic_swap.sh
+source .swap/atomic_swap.sh
 ```
 
 > **Tip:** The setup container stays running after initialization, so you can access it anytime with `docker exec -it xchain-app bash` in a separate terminal
@@ -63,7 +63,7 @@ source ./atomic_swap.sh
 lock_btc
 ```
 
-The above command will execute the first step of the swap. Upon success, you should see the **SECRET**, **SECRET_HASH**, and **LOCK_TXID** in stdout. We log this for demo only. Keep an eye on those three values, as you'll need them for claiming the BTC.
+The above command will execute the first step of the swap. Upon success, the **SECRET**, **SECRET_HASH**, and **LOCK_TXID** are automatically saved to `.swap/secrets/swap.secret`. You can also view them in stdout.
 
 #### Commit the NFT
 
@@ -82,8 +82,11 @@ commit_for_mint --chain <eth|sol> <SECRET_HASH>
 # 3. (BUYER): Mint NFT by revealing the secret
 mint_with_secret --chain <eth|sol> <SECRET>
 
+# Or use the secret file directly:
+mint_with_secret --chain <eth|sol> --secret-file .swap/secrets/swap.secret
+
 # Example commands:
-#   mint_with_secret --chain eth <SECRET>
+#   mint_with_secret --chain eth --secret-file .swap/secrets/swap.secret
 #   mint_with_secret --chain sol <SECRET>
 ```
 
@@ -92,16 +95,31 @@ mint_with_secret --chain <eth|sol> <SECRET>
 ```bash
 # 4. (SELLER): Claim Bitcoin using the revealed secret
 claim_btc <SECRET> <SECRET_HASH> <LOCK_TXID>
+
+# Or use the secret file directly:
+claim_btc --secret-file .swap/secrets/swap.secret
 ```
 
-**NOTE**: The above commands `lock_btc`, `commit_for_mint`, `mint_with_secret`, and `claim_btc` work the same in the local setup case as in the Dockerized case.
+#### Cancel Commitment (Recovery)
+
+If the swap doesn't complete, the seller can cancel an expired commitment:
+
+```bash
+# Cancel an expired commitment (seller only)
+cancel_commit --chain <eth|sol>
+
+# With specific token ID:
+cancel_commit --chain eth --token-id 5
+```
+
+**NOTE**: The above commands `lock_btc`, `commit_for_mint`, `mint_with_secret`, `claim_btc`, and `cancel_commit` work the same in the local setup case as in the Dockerized case.
 
 ### Local Setup & Demo
 
 Prerequisites:
 
 - **Rust** 1.75+ with Cargo
-- **Node.js** 18+ with npm/yarn  
+- **Node.js** 18+ with npm/yarn
 - **Bitcoin Core** (for regtest mode)
 - **Hardhat** development environment
 
@@ -134,9 +152,9 @@ The setup script automatically:
 - Installs missing prerequisites (Bitcoin Core, dependencies)
 - Builds the Rust `client`
 - Configures and starts Bitcoin regtest node
-- Deploys Ethereum NFT contract on local Hardhat network  
+- Deploys Ethereum NFT contract on local Hardhat network
 - Generates funded test accounts for both networks
-- Creates ready-to-use demo configuration
+- Creates ready-to-use demo configuration in `.swap/`
 
 **NOTE**: The setup script prefunds the buyer's BTC wallet ("testwallet"), but to ensure sufficient funds and avoid potential errors, you may need to mine additional blocks:
 
@@ -145,19 +163,35 @@ The setup script automatically:
 bitcoin-cli -regtest -datadir=.bitcoin generatetoaddress 101 <BUYER_BTC_ADDRESS>
 ```
 
-Copy-paste the `<BUYER_BTC_ADDRESS>` from the `atomic_swap.sh` demo config file. Once you have enough BTC, proceed with the swap:
+Copy-paste the `<BUYER_BTC_ADDRESS>` from the `.swap/atomic_swap.sh` demo config file. Once you have enough BTC, proceed with the swap:
 
 ```bash
 # 0. Load the config
-source ./atomic_swap.sh
+source .swap/atomic_swap.sh
 ```
 
 The above command will load the demo config. You can then proceed to execute the `lock_btc`, `commit_for_mint`, etc. commands as specified in the Dockerized demo section.
 To stop all services, run the `stop_services` command.
 
+## Directory Structure
+
+After setup, the `.swap/` directory contains all runtime-generated files:
+
+```sh
+.swap/
+├── atomic_swap.sh        # Demo configuration (source this file)
+├── contract_address.txt  # Ethereum NFT contract address
+├── program_id.txt        # Solana program ID
+├── keypairs/
+│   ├── buyer.json        # Solana buyer keypair
+│   └── seller.json       # Solana seller keypair
+└── secrets/
+    └── swap.secret       # Secret, hash, and txid from lock_btc
+```
+
 ## Customizing Demo Parameters
 
-You can modify the generated `atomic_swap.sh` to customize the demo run:
+You can modify the generated `.swap/atomic_swap.sh` to customize the demo run:
 
 ```bash
 # Edit amounts, token IDs, metadata, etc.
@@ -175,7 +209,7 @@ export METADATA_URI="https://your-nft-metadata.json"
 # Start all services
 docker-compose up --build
 
-# Stop all services  
+# Stop all services
 docker-compose down
 
 # View logs
@@ -186,7 +220,7 @@ docker-compose ps
 
 # Access individual services
 docker exec -it xchain-btc bash      # Bitcoin node
-docker exec -it xchain-eth bash      # Ethereum node  
+docker exec -it xchain-eth bash      # Ethereum node
 docker exec -it xchain-sol bash      # Solana validator
 docker exec -it xchain-app bash      # Demo environment
 ```
@@ -197,7 +231,7 @@ docker exec -it xchain-app bash      # Demo environment
 # Bitcoin regtest status
 docker exec -it xchain-btc bitcoin-cli -regtest -rpcport=18443 -rpcuser=user -rpcpassword=password getblockchaininfo
 
-# Ethereum network status  
+# Ethereum network status
 docker exec -it xchain-eth curl -X POST -H 'Content-Type: application/json' --data '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' http://localhost:8545
 
 # Solana cluster status
