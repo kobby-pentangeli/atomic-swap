@@ -665,12 +665,80 @@ claim_btc() {
         --timeout "\$HTLC_TIMEOUT"
 }
 
+# Cancel an expired or unwanted commitment
+cancel_commit() {
+    local chain=""
+    local token_id=""
+
+    # Parse arguments
+    while [ \$# -gt 0 ]; do
+        case "\$1" in
+            --chain)
+                chain="\$2"
+                shift 2
+                ;;
+            --token-id)
+                token_id="\$2"
+                shift 2
+                ;;
+            *)
+                # Positional argument
+                if [ -z "\$chain" ]; then
+                    chain="\$1"
+                elif [ -z "\$token_id" ]; then
+                    token_id="\$1"
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    # Default token_id if not provided
+    if [ -z "\$token_id" ]; then
+        token_id="\$TOKEN_ID"
+    fi
+
+    if [ -z "\$chain" ]; then
+        echo "Usage: cancel_commit --chain <eth|sol> [--token-id <ID>]"
+        echo "  or:  cancel_commit <eth|sol> [<TOKEN_ID>]"
+        echo ""
+        echo "Cancels an expired commitment. Only the seller (committer) can cancel."
+        echo "If --token-id is not specified, defaults to \$TOKEN_ID."
+        return 1
+    fi
+
+    case "\$chain" in
+        "eth")
+            RUST_LOG=info ./target/release/client cancel-commit \\
+                --chain "eth" \\
+                --eth-rpc "\$ETH_RPC_URL" \\
+                --caller-eth-key "\$SELLER_ETH_PRIVKEY" \\
+                --nft-contract "\$NFT_CONTRACT_ADDRESS" \\
+                --token-id "\$token_id"
+            ;;
+        "sol")
+            RUST_LOG=info ./target/release/client cancel-commit \\
+                --chain "sol" \\
+                --sol-rpc "\$SOL_RPC_URL" \\
+                --sol-ws "\$SOL_WS_URL" \\
+                --caller-sol-keypair "\$SELLER_SOL_KEYPAIR" \\
+                --program-id "\$SOL_PROGRAM_ID" \\
+                --token-id "\$token_id"
+            ;;
+        *)
+            echo "Error: Invalid chain '\$chain'. Use 'eth' or 'sol'"
+            return 1
+            ;;
+    esac
+}
+
 echo "Demo configuration loaded!"
 echo "Available commands:"
 echo "  lock_btc           - Lock up Bitcoin in the HTLC"
 echo "  commit_for_mint    - Seller commits to mint (requires secret hash)"
 echo "  mint_with_secret   - Buyer mints the NFT with secret reveal"
 echo "  claim_btc          - Seller claims Bitcoin (requires secret, hash, txid)"
+echo "  cancel_commit      - Cancel an expired commitment (seller only)"
 echo ""
 echo "Bitcoin RPC: \$BTC_RPC_URL"
 echo "Ethereum RPC: \$ETH_RPC_URL"
