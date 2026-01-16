@@ -14,19 +14,14 @@ use bitcoin::{
 };
 use bitcoincore_rpc::{Auth, Client as RpcClient, RpcApi};
 use btc_htlc::Contract as BtcContract;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
+mod fee;
 mod signer;
 
 use signer::BtcTxSigner;
 
 use crate::types::UtxoInfo;
-
-/// Dust threshold for Bitcoin outputs.
-const DUST_THRESHOLD: Amount = Amount::from_sat(546);
-
-/// Default fee rate fallback (sat/vB) when estimation fails.
-const FALLBACK_FEE_RATE: f64 = 10.0;
 
 /// Bitcoin RPC client with HTLC support.
 ///
@@ -125,7 +120,7 @@ impl BtcClient {
             })
             .collect::<Vec<TxIn>>();
 
-        let fee = self.estimate_fee_for_htlc_funding(inputs.len(), 2)?;
+        let fee = fee::estimate_fee_for_htlc_funding(&self.rpc, inputs.len(), 2)?;
         let change_amount = total_input
             .checked_sub(amount + fee)
             .ok_or_else(|| anyhow!("Insufficient funds after fee calculation"))?;
@@ -134,7 +129,7 @@ impl BtcClient {
             value: amount,
             script_pubkey: address.script_pubkey(),
         }];
-        if change_amount > DUST_THRESHOLD {
+        if change_amount > fee::DUST_THRESHOLD {
             let change_addr = self.get_new_address()?;
             outputs.push(TxOut {
                 value: change_amount,
@@ -205,7 +200,7 @@ impl BtcClient {
         let output = self.get_and_verify_htlc_output(contract, txid, vout)?;
         let dest_addr = self.resolve_destination(dst)?;
 
-        let (claim_amount, fee) = self.calculate_claim_amount(&output)?;
+        let (claim_amount, fee) = fee::calculate_claim_amount(&self.rpc, &output)?;
 
         let unsigned_tx = Transaction {
             version: transaction::Version::TWO,
@@ -289,7 +284,7 @@ impl BtcClient {
         let output = self.get_and_verify_htlc_output(contract, txid, vout)?;
         let dest_addr = self.resolve_destination(dst)?;
 
-        let (refund_amount, fee) = self.calculate_timeout_amount(&output)?;
+        let (refund_amount, fee) = fee::calculate_timeout_amount(&self.rpc, &output)?;
         let lock_time =
             absolute::LockTime::from_height(contract.timeout).context("Invalid timeout height")?;
 
@@ -330,23 +325,6 @@ impl BtcClient {
         );
 
         Ok(refund_txid)
-    }
-
-    /// Get the current network fee rate in sat/vB.
-    ///
-    /// Attempts to get a smart fee estimate for 6-block confirmation.
-    /// Falls back to a default rate if estimation fails.
-    pub fn get_fee_rate(&self) -> Result<f64> {
-        self.rpc
-            .estimate_smart_fee(6, None)
-            .ok()
-            .and_then(|result| result.fee_rate)
-            .map(|rate| rate.to_btc() * 100_000_000.0)
-            .or_else(|| {
-                warn!("Fee estimation failed, using fallback rate");
-                Some(FALLBACK_FEE_RATE)
-            })
-            .ok_or_else(|| anyhow!("Fee rate unavailable"))
     }
 
     /// Select UTXOs sufficient for the required amount.
@@ -436,57 +414,6 @@ impl BtcClient {
             self.signer
                 .compressed_public_key()
                 .map(|pk| Address::p2wpkh(&pk, self.network))
-        })
-    }
-
-    /// Calculate claim amount after fees.
-    fn calculate_claim_amount(&self, output: &TxOut) -> Result<(Amount, Amount)> {
-        let fee = self.estimate_fee_for_htlc_claim()?;
-        self.validate_amount_after_fee(output.value, fee)
-    }
-
-    /// Calculate timeout refund amount after fees.
-    fn calculate_timeout_amount(&self, output: &TxOut) -> Result<(Amount, Amount)> {
-        let fee = self.estimate_fee_for_htlc_timeout()?;
-        self.validate_amount_after_fee(output.value, fee)
-    }
-
-    /// Verify that amount is sufficient after fee deduction.
-    fn validate_amount_after_fee(&self, amount: Amount, fee: Amount) -> Result<(Amount, Amount)> {
-        let net_amount = amount
-            .checked_sub(fee)
-            .ok_or_else(|| anyhow!("Amount {amount} insufficient to cover fee {fee}"))?;
-
-        if net_amount <= DUST_THRESHOLD {
-            return Err(anyhow!(
-                "Amount {net_amount} below dust threshold after {fee} fee",
-            ));
-        }
-
-        Ok((net_amount, fee))
-    }
-
-    /// Estimate fee for HTLC funding transaction.
-    fn estimate_fee_for_htlc_funding(&self, inputs: usize, outputs: usize) -> Result<Amount> {
-        self.get_fee_rate().map(|rate| {
-            let vbytes = 11 + (inputs * 68) + (outputs * 43);
-            Amount::from_sat((vbytes as f64 * rate).ceil() as u64)
-        })
-    }
-
-    /// Estimate fee for HTLC claim transaction.
-    fn estimate_fee_for_htlc_claim(&self) -> Result<Amount> {
-        self.get_fee_rate().map(|rate| {
-            let vbytes = 11 + 150 + 31; // HTLC claim includes script + secret
-            Amount::from_sat((vbytes as f64 * rate).ceil() as u64)
-        })
-    }
-
-    /// Estimate fee for HTLC timeout transaction.
-    fn estimate_fee_for_htlc_timeout(&self) -> Result<Amount> {
-        self.get_fee_rate().map(|rate| {
-            let vbytes = 11 + 120 + 31; // HTLC timeout is smaller than claim
-            Amount::from_sat((vbytes as f64 * rate).ceil() as u64)
         })
     }
 
