@@ -213,3 +213,30 @@ pub struct CancelCommitArgs {
     /// Token ID of the commitment to cancel.
     pub token_id: u64,
 }
+
+/// Arguments for the refund-btc command.
+///
+/// Used by the buyer to reclaim Bitcoin from an HTLC after timeout expiry.
+#[derive(Debug, Clone)]
+pub struct RefundBtcArgs {
+    /// Bitcoin RPC endpoint URL.
+    pub btc_rpc: String,
+    /// Bitcoin RPC username.
+    pub btc_user: String,
+    /// Bitcoin RPC password.
+    pub btc_pass: String,
+    /// Bitcoin network (mainnet, testnet, signet, regtest).
+    pub btc_network: Network,
+    /// Buyer's Bitcoin private key in WIF format.
+    pub buyer_btc_key: String,
+    /// Seller's Bitcoin public key in hex format.
+    pub seller_btc_pubkey: String,
+    /// File path to the generated secret from the lock transaction.
+    pub secret_file: PathBuf,
+    /// Output index in the lock transaction.
+    pub lock_vout: u32,
+    /// HTLC timeout in blocks.
+    pub timeout: u32,
+    /// Optional destination address (defaults to buyer's wallet).
+    pub destination: Option<BtcAddress>,
+}

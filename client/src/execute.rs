@@ -28,6 +28,7 @@ use crate::eth::EthClient;
 use crate::sol::SolClient;
 use crate::types::{
     CancelCommitArgs, Chain, ClaimBtcArgs, CommitForMintArgs, LockBtcArgs, MintWithSecretArgs,
+    RefundBtcArgs,
 };
 use crate::utils;
 
@@ -36,12 +37,6 @@ const MINT_AVAILABILITY_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Interval between mint availability checks.
 const MINT_CHECK_INTERVAL: Duration = Duration::from_secs(5);
-
-/// Default directory for swap secrets.
-const DEFAULT_SECRETS_DIR: &str = ".swap/secrets";
-
-/// Default secret file name.
-const DEFAULT_SECRET_FILE: &str = "swap.secret";
 
 /// Locks Bitcoin in an HTLC contract.
 ///
@@ -52,8 +47,8 @@ pub fn lock_bitcoin(args: LockBtcArgs) -> Result<()> {
     info!("Executing Bitcoin HTLC");
 
     let buyer_keypair = utils::validate_btc_keypair(&args.buyer_btc_key, "buyer")?;
-    let seller_pubkey = utils::validate_btc_pubkey(&args.seller_btc_pubkey, "seller")?;
     let buyer_pubkey = PublicKey::from(buyer_keypair.public_key());
+    let seller_pubkey = utils::validate_btc_pubkey(&args.seller_btc_pubkey, "seller")?;
 
     let r_secret_hex = btc_htlc::generate_random_secret_hex();
     let secret_bytes = btc_htlc::hex_to_secret(&r_secret_hex)?;
@@ -100,9 +95,9 @@ pub fn lock_bitcoin(args: LockBtcArgs) -> Result<()> {
     info!("SECRET_HASH: {}", hex::encode(secret_hash));
     info!("LOCK_TXID: {lock_txid}");
 
-    let secret_file = args
-        .secret_output_file
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_SECRETS_DIR).join(DEFAULT_SECRET_FILE));
+    let secret_file = args.secret_output_file.unwrap_or_else(|| {
+        PathBuf::from(utils::DEFAULT_SECRETS_DIR).join(utils::DEFAULT_SECRETS_FILE)
+    });
     utils::write_secret_to_file(&secret_file, &secret_bytes, &secret_hash, &lock_txid)?;
     info!(path = %secret_file.display(), "Secret written to file");
 
@@ -133,6 +128,84 @@ pub async fn mint_with_secret(args: MintWithSecretArgs) -> Result<()> {
     }
 }
 
+/// Claims Bitcoin from the HTLC using the revealed secret.
+///
+/// This is the final step (4) of the atomic swap. After the buyer reveals the
+/// secret on the NFT chain, the seller uses the same secret to claim the
+/// locked Bitcoin.
+///
+/// # Verification
+///
+/// The function verifies that the provided secret hashes to the expected
+/// value before attempting the claim.
+#[instrument(skip_all)]
+pub fn claim_bitcoin(args: ClaimBtcArgs) -> Result<()> {
+    info!(
+        lock_txid = %args.lock_txid,
+        lock_vout = %args.lock_vout,
+        "Executing Bitcoin claim with revealed secret"
+    );
+
+    let computed_hash = Sha256::digest(args.secret);
+    if *computed_hash != args.secret_hash {
+        return Err(anyhow!(
+            "Secret verification failed: computed hash {} doesn't match provided hash {}",
+            hex::encode(computed_hash),
+            hex::encode(args.secret_hash)
+        ));
+    }
+
+    info!(
+        secret_verified = true,
+        secret_hash = %hex::encode(args.secret_hash),
+        "Secret verification passed"
+    );
+
+    let seller_keypair = utils::validate_btc_keypair(&args.seller_btc_key, "seller")?;
+    let buyer_pubkey = utils::validate_btc_pubkey(&args.buyer_btc_pubkey, "buyer")?;
+    let seller_pubkey = PublicKey::from(seller_keypair.public_key());
+
+    let contract_params = HtlcParams {
+        secret_hash: args.secret_hash,
+        seller: seller_pubkey,
+        buyer: buyer_pubkey,
+        timeout: args.timeout,
+        network: args.btc_network,
+    };
+    let btc_contract = BtcContract::new(contract_params);
+
+    info!(
+        htlc_address = %btc_contract.address(),
+        seller_pubkey = %seller_pubkey,
+        buyer_pubkey = %buyer_pubkey,
+        "Reconstructed HTLC contract"
+    );
+
+    let auth = Auth::UserPass(args.btc_user.clone(), args.btc_pass.clone());
+    let btc_client = BtcClient::new(&args.btc_rpc, auth, args.btc_network, seller_keypair)
+        .context("Failed to initialize Bitcoin client")?;
+
+    let claim_txid = btc_client
+        .claim_funds(
+            &btc_contract,
+            &args.secret,
+            args.lock_txid,
+            args.lock_vout,
+            args.destination.clone(),
+        )
+        .context("Failed to claim Bitcoin funds")?;
+
+    info!(
+        claim_txid = %claim_txid,
+        from_htlc = %format!("{}:{}", args.lock_txid, args.lock_vout),
+        destination = ?args.destination.as_ref().map(|d| d.to_string()).unwrap_or_else(|| "seller wallet".to_string()),
+        "Bitcoin claimed successfully"
+    );
+
+    info!("Cross-chain atomic swap fully completed. All parties have received their assets");
+    Ok(())
+}
+
 /// Cancels an NFT commitment on the specified chain.
 ///
 /// This allows the seller to cancel their commitment before the NFT is minted,
@@ -144,6 +217,55 @@ pub async fn cancel_commitment(args: CancelCommitArgs) -> Result<()> {
         Chain::Ethereum => cancel_commitment_eth(args).await,
         Chain::Solana => tokio::task::spawn_blocking(move || cancel_commitment_sol(args)).await?,
     }
+}
+
+/// Refunds Bitcoin to the buyer from an HTLC after timeout expiry.
+pub fn refund_bitcoin(args: RefundBtcArgs) -> Result<()> {
+    info!("Refunding Bitcoin from HTLC (timeout expiry)");
+
+    let buyer_keypair = utils::validate_btc_keypair(&args.buyer_btc_key, "buyer")?;
+    let buyer_pubkey = PublicKey::from(buyer_keypair.public_key());
+    let seller_pubkey = utils::validate_btc_pubkey(&args.seller_btc_pubkey, "seller")?;
+
+    let (_, secret_hash, lock_txid) = utils::parse_secret_file(&args.secret_file)?;
+
+    let contract_params = HtlcParams {
+        secret_hash,
+        seller: seller_pubkey,
+        buyer: buyer_pubkey,
+        timeout: args.timeout,
+        network: args.btc_network,
+    };
+    let btc_contract = BtcContract::new(contract_params);
+
+    info!(
+        htlc_address = %btc_contract.address(),
+        buyer_pubkey = %buyer_pubkey,
+        seller_pubkey = %seller_pubkey,
+        "Reconstructed HTLC contract"
+    );
+
+    let auth = Auth::UserPass(args.btc_user.clone(), args.btc_pass.clone());
+    let btc_client = BtcClient::new(&args.btc_rpc, auth, args.btc_network, buyer_keypair)
+        .context("Failed to initialize Bitcoin client")?;
+
+    let refund_txid = btc_client
+        .refund_timeout(
+            &btc_contract,
+            lock_txid,
+            args.lock_vout,
+            args.destination.clone(),
+        )
+        .context("Failed to claim Bitcoin funds")?;
+
+    info!(
+        refund_txid = %refund_txid,
+        from_htlc = %format!("{}:{}", lock_txid, args.lock_vout),
+        destination = ?args.destination.as_ref().map(|d| d.to_string()).unwrap_or_else(|| "buyer wallet".to_string()),
+        "Bitcoin refunded successfully"
+    );
+
+    Ok(())
 }
 
 /// Commits an NFT for minting on Ethereum.
@@ -432,83 +554,5 @@ fn cancel_commitment_sol(args: CancelCommitArgs) -> Result<()> {
         "Solana commitment cancelled successfully"
     );
 
-    Ok(())
-}
-
-/// Claims Bitcoin from the HTLC using the revealed secret.
-///
-/// This is the final step of the atomic swap. After the buyer reveals the
-/// secret on the NFT chain, the seller uses the same secret to claim the
-/// locked Bitcoin.
-///
-/// # Verification
-///
-/// The function verifies that the provided secret hashes to the expected
-/// value before attempting the claim.
-#[instrument(skip_all)]
-pub fn claim_bitcoin(args: ClaimBtcArgs) -> Result<()> {
-    info!(
-        lock_txid = %args.lock_txid,
-        lock_vout = %args.lock_vout,
-        "Executing Bitcoin claim with revealed secret"
-    );
-
-    let computed_hash = Sha256::digest(args.secret);
-    if *computed_hash != args.secret_hash {
-        return Err(anyhow!(
-            "Secret verification failed: computed hash {} doesn't match provided hash {}",
-            hex::encode(computed_hash),
-            hex::encode(args.secret_hash)
-        ));
-    }
-
-    info!(
-        secret_verified = true,
-        secret_hash = %hex::encode(args.secret_hash),
-        "Secret verification passed"
-    );
-
-    let seller_keypair = utils::validate_btc_keypair(&args.seller_btc_key, "seller")?;
-    let buyer_pubkey = utils::validate_btc_pubkey(&args.buyer_btc_pubkey, "buyer")?;
-    let seller_pubkey = PublicKey::from(seller_keypair.public_key());
-
-    let contract_params = HtlcParams {
-        secret_hash: args.secret_hash,
-        seller: seller_pubkey,
-        buyer: buyer_pubkey,
-        timeout: args.timeout,
-        network: args.btc_network,
-    };
-    let btc_contract = BtcContract::new(contract_params);
-
-    info!(
-        htlc_address = %btc_contract.address(),
-        seller_pubkey = %seller_pubkey,
-        buyer_pubkey = %buyer_pubkey,
-        "Reconstructed HTLC contract"
-    );
-
-    let auth = Auth::UserPass(args.btc_user.clone(), args.btc_pass.clone());
-    let btc_client = BtcClient::new(&args.btc_rpc, auth, args.btc_network, seller_keypair)
-        .context("Failed to initialize Bitcoin client")?;
-
-    let claim_txid = btc_client
-        .claim_funds(
-            &btc_contract,
-            &args.secret,
-            args.lock_txid,
-            args.lock_vout,
-            args.destination.clone(),
-        )
-        .context("Failed to claim Bitcoin funds")?;
-
-    info!(
-        claim_txid = %claim_txid,
-        from_htlc = %format!("{}:{}", args.lock_txid, args.lock_vout),
-        destination = ?args.destination.as_ref().map(|d| d.to_string()).unwrap_or_else(|| "seller wallet".to_string()),
-        "Bitcoin claimed successfully"
-    );
-
-    info!("Cross-chain atomic swap fully completed. All parties have received their assets");
     Ok(())
 }

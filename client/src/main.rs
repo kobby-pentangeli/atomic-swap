@@ -27,6 +27,7 @@ pub mod utils;
 
 use types::{
     CancelCommitArgs, Chain, ClaimBtcArgs, CommitForMintArgs, LockBtcArgs, MintWithSecretArgs,
+    RefundBtcArgs,
 };
 
 const DEFAULT_BTC_RPC_URL: &str = "http://localhost:18443";
@@ -252,6 +253,40 @@ enum Commands {
         #[arg(long)]
         token_id: u64,
     },
+
+    /// Buyer withdraws Bitcoin from an HTLC after timeout expiry
+    RefundBtc {
+        /// Bitcoin RPC URL
+        #[arg(long, default_value = DEFAULT_BTC_RPC_URL)]
+        btc_rpc: String,
+        /// Bitcoin RPC username
+        #[arg(long, default_value = "user")]
+        btc_user: String,
+        /// Bitcoin RPC password
+        #[arg(long, default_value = "password")]
+        btc_pass: String,
+        /// Bitcoin network
+        #[arg(long, default_value = "regtest")]
+        btc_network: String,
+        /// Buyer's Bitcoin private key
+        #[arg(long)]
+        buyer_btc_key: String,
+        /// Seller's Bitcoin public key
+        #[arg(long)]
+        seller_btc_pubkey: String,
+        /// File containing the generated secret from the lock transaction
+        #[arg(long)]
+        secret_file: PathBuf,
+        /// Output index in the lock transaction
+        #[arg(long, default_value = "0")]
+        lock_vout: u32,
+        /// HTLC timeout in blocks
+        #[arg(long, default_value = "144")]
+        timeout: u32,
+        /// Destination address (optional)
+        #[arg(long)]
+        destination: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -384,7 +419,7 @@ async fn main() -> Result<()> {
                 .parse::<Chain>()
                 .context("Invalid chain specification")?;
 
-            let secret_bytes = utils::resolve_secret(secret, secret_file)?;
+            let (secret_bytes, _, _) = utils::resolve_secrets(secret, secret_file)?;
 
             let args = MintWithSecretArgs {
                 chain: chain.clone(),
@@ -451,7 +486,7 @@ async fn main() -> Result<()> {
 
             // Resolve secret from either --secret or --secret-file
             let (secret_bytes, file_secret_hash, file_lock_txid) =
-                utils::resolve_secret_with_metadata(secret, secret_file.clone())?;
+                utils::resolve_secrets(secret, secret_file.clone())?;
 
             let final_secret_hash = secret_hash
                 .map(|h| utils::decode_hex_hash(&h, "secret hash"))
@@ -548,6 +583,38 @@ async fn main() -> Result<()> {
             }
 
             execute::cancel_commitment(args).await
+        }
+
+        Commands::RefundBtc {
+            btc_rpc,
+            btc_user,
+            btc_pass,
+            btc_network,
+            buyer_btc_key,
+            seller_btc_pubkey,
+            secret_file,
+            lock_vout,
+            timeout,
+            destination,
+        } => {
+            let network = utils::parse_btc_network(&btc_network)?;
+
+            let args = RefundBtcArgs {
+                btc_rpc,
+                btc_user,
+                btc_pass,
+                btc_network: network,
+                buyer_btc_key,
+                seller_btc_pubkey,
+                secret_file,
+                lock_vout,
+                timeout,
+                destination: destination
+                    .map(|s| utils::parse_btc_address(&s, network))
+                    .transpose()?,
+            };
+
+            execute::refund_bitcoin(args)
         }
     }
 }
