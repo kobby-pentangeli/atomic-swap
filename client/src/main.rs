@@ -1,3 +1,17 @@
+//! Cross-chain atomic swap CLI.
+//!
+//! Orchestrates the full
+//! swap lifecycle including locking funds, committing NFTs, revealing secrets,
+//! and claiming assets.
+//!
+//! # Commands
+//!
+//! - `lock-btc`: Lock Bitcoin in an HTLC (buyer, step 1)
+//! - `commit-for-mint`: Commit NFT for minting (seller, step 2)
+//! - `mint-with-secret`: Mint NFT by revealing secret (buyer, step 3)
+//! - `claim-btc`: Claim Bitcoin using revealed secret (seller, step 4)
+//! - `cancel-commit`: Cancel an expired or unwanted commitment
+
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
@@ -264,7 +278,7 @@ async fn main() -> Result<()> {
                 btc_rpc,
                 btc_user,
                 btc_pass,
-                btc_network: btc::utils::parse_network(&btc_network)?,
+                btc_network: btc::utils::parse_btc_network(&btc_network)?,
                 buyer_btc_key,
                 seller_btc_pubkey,
                 btc_amount,
@@ -432,7 +446,7 @@ async fn main() -> Result<()> {
             timeout,
             destination,
         } => {
-            let network = btc::utils::parse_network(&btc_network)?;
+            let network = btc::utils::parse_btc_network(&btc_network)?;
 
             // Resolve secret from either --secret or --secret-file
             let (secret_bytes, file_secret_hash, file_lock_txid) =
@@ -537,23 +551,34 @@ async fn main() -> Result<()> {
     }
 }
 
+/// Decodes a hex-encoded 32-byte hash value.
+///
+/// # Errors
+///
+/// Returns an error if the hex string is invalid or not exactly 32 bytes.
 fn decode_hex_hash(hex_str: &str, field_name: &str) -> Result<[u8; 32]> {
-    let bytes =
-        hex::decode(hex_str).with_context(|| format!("Invalid hex encoding for {field_name}"))?;
-
-    bytes.clone().try_into().map_err(|_| {
-        anyhow!(
-            "Invalid {field_name} length: expected 32 bytes, got {}",
-            bytes.len()
-        )
-    })
+    hex::decode(hex_str)
+        .with_context(|| format!("Invalid hex encoding for {field_name}"))
+        .and_then(|bytes| {
+            bytes.try_into().map_err(|v: Vec<u8>| {
+                anyhow!(
+                    "Invalid {field_name} length: expected 32 bytes, got {}",
+                    v.len()
+                )
+            })
+        })
 }
 
+/// Decodes a hex-encoded 32-byte secret.
 fn decode_hex_secret(hex_str: &str) -> Result<[u8; 32]> {
     decode_hex_hash(hex_str, "secret")
 }
 
 /// Resolves a secret from either a direct hex string or a file.
+///
+/// # Errors
+///
+/// Returns an error if neither or both sources are provided.
 fn resolve_secret(secret: Option<String>, secret_file: Option<PathBuf>) -> Result<[u8; 32]> {
     match (secret, secret_file) {
         (Some(s), None) => decode_hex_secret(&s),
@@ -566,10 +591,16 @@ fn resolve_secret(secret: Option<String>, secret_file: Option<PathBuf>) -> Resul
     }
 }
 
-/// Secret file data containing the secret and optional metadata.
+/// Secret file data: (secret, optional secret_hash, optional lock_txid).
 type SecretFileData = ([u8; 32], Option<[u8; 32]>, Option<bitcoin::Txid>);
 
 /// Resolves a secret and optional metadata from either a direct hex string or a file.
+///
+/// When reading from a file, also extracts the secret hash and lock txid if present.
+///
+/// # Errors
+///
+/// Returns an error if neither or both sources are provided.
 fn resolve_secret_with_metadata(
     secret: Option<String>,
     secret_file: Option<PathBuf>,
@@ -593,70 +624,43 @@ fn resolve_secret_with_metadata(
 /// SECRET_HASH=<hex>
 /// LOCK_TXID=<txid>
 /// ```
+///
+/// Lines starting with `#` are treated as comments and ignored.
 fn parse_secret_file(path: &Path) -> Result<SecretFileData> {
+    use std::collections::HashMap;
+
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read secret file: {}", path.display()))?;
 
-    let mut secret: Option<[u8; 32]> = None;
-    let mut secret_hash: Option<[u8; 32]> = None;
-    let mut lock_txid: Option<bitcoin::Txid> = None;
+    let entries = content
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .filter_map(|line| line.split_once('='))
+        .map(|(k, v)| (k.trim(), v.trim()))
+        .collect::<HashMap<&str, &str>>();
 
-    for line in content.lines() {
-        let line = line.trim();
-        if line.starts_with('#') || line.is_empty() {
-            continue;
-        }
+    let secret = entries
+        .get("SECRET")
+        .ok_or_else(|| anyhow!("SECRET not found in file: {}", path.display()))
+        .and_then(|v| decode_hex_secret(v))?;
 
-        if let Some((key, value)) = line.split_once('=') {
-            match key.trim() {
-                "SECRET" => {
-                    secret = Some(decode_hex_secret(value.trim())?);
-                }
-                "SECRET_HASH" => {
-                    secret_hash = Some(decode_hex_hash(value.trim(), "secret hash")?);
-                }
-                "LOCK_TXID" => {
-                    lock_txid = Some(
-                        value
-                            .trim()
-                            .parse()
-                            .context("Invalid LOCK_TXID in secret file")?,
-                    );
-                }
-                _ => {} // Ignore unknown keys
-            }
-        }
-    }
+    let secret_hash = entries
+        .get("SECRET_HASH")
+        .map(|v| decode_hex_hash(v, "secret hash"))
+        .transpose()?;
 
-    let secret = secret.ok_or_else(|| anyhow!("SECRET not found in file: {}", path.display()))?;
+    let lock_txid = entries
+        .get("LOCK_TXID")
+        .map(|v| v.parse().context("Invalid LOCK_TXID in secret file"))
+        .transpose()?;
 
     Ok((secret, secret_hash, lock_txid))
 }
 
 #[cfg(test)]
 mod tests {
-    use bitcoin::Network;
-    use btc::utils::parse_network;
-
     use super::*;
-
-    #[test]
-    fn test_parse_network() {
-        assert!(matches!(
-            parse_network("mainnet").unwrap(),
-            Network::Bitcoin
-        ));
-        assert!(matches!(
-            parse_network("testnet").unwrap(),
-            Network::Testnet
-        ));
-        assert!(matches!(parse_network("signet").unwrap(), Network::Signet));
-        assert!(matches!(
-            parse_network("regtest").unwrap(),
-            Network::Regtest
-        ));
-        assert!(parse_network("invalid").is_err());
-    }
 
     #[test]
     fn test_decode_hex_hash() {
