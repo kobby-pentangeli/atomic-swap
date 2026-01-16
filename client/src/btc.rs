@@ -17,10 +17,10 @@ use btc_htlc::Contract as BtcContract;
 use tracing::{debug, info, warn};
 
 mod signer;
-pub mod utils;
 
 use signer::BtcTxSigner;
-use utils::UtxoInfo;
+
+use crate::types::UtxoInfo;
 
 /// Dust threshold for Bitcoin outputs.
 const DUST_THRESHOLD: Amount = Amount::from_sat(546);

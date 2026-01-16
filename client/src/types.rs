@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use bitcoin::{Address as BtcAddress, Network, Txid};
+use bitcoin::{Address as BtcAddress, Network, OutPoint, TxOut, Txid};
 use ethers::core::types::{Address as EthAddress, U256};
 use serde::{Deserialize, Serialize};
 
@@ -34,6 +34,18 @@ impl AsRef<str> for Chain {
             Self::Solana => "solana",
         }
     }
+}
+
+/// Information about an unspent transaction output (UTXO).
+///
+/// Contains both the outpoint (transaction ID and output index) and
+/// the output details (value and script).
+#[derive(Debug, Clone)]
+pub struct UtxoInfo {
+    /// The outpoint identifying this UTXO.
+    pub outpoint: OutPoint,
+    /// The transaction output details.
+    pub tx_out: TxOut,
 }
 
 /// Ethereum NFT commitment information returned from the contract.

@@ -10,15 +10,12 @@
 //! Additionally, it provides a cancellation mechanism:
 //! - Cancel NFT commitment (seller only before timeout, anyone after timeout)
 
-use std::fs::{self, OpenOptions};
-use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anchor_client::solana_sdk::signature::read_keypair_file;
 use anyhow::{Context, Result, anyhow};
-use bitcoin::{Amount, PublicKey, Txid};
+use bitcoin::{Amount, PublicKey};
 use bitcoincore_rpc::Auth;
 use btc_htlc::{Contract as BtcContract, HtlcParams};
 use ethers::types::{H256, U256};
@@ -26,12 +23,13 @@ use sha2::{Digest, Sha256};
 use tokio::time::sleep;
 use tracing::{debug, info, instrument};
 
-use crate::btc::{BtcClient, utils};
+use crate::btc::BtcClient;
 use crate::eth::EthClient;
 use crate::sol::SolClient;
 use crate::types::{
     CancelCommitArgs, Chain, ClaimBtcArgs, CommitForMintArgs, LockBtcArgs, MintWithSecretArgs,
 };
+use crate::utils;
 
 /// Maximum time to wait for mint availability.
 const MINT_AVAILABILITY_TIMEOUT: Duration = Duration::from_secs(120);
@@ -105,7 +103,7 @@ pub fn lock_bitcoin(args: LockBtcArgs) -> Result<()> {
     let secret_file = args
         .secret_output_file
         .unwrap_or_else(|| PathBuf::from(DEFAULT_SECRETS_DIR).join(DEFAULT_SECRET_FILE));
-    write_secret_to_file(&secret_file, &secret_bytes, &secret_hash, &lock_txid)?;
+    utils::write_secret_to_file(&secret_file, &secret_bytes, &secret_hash, &lock_txid)?;
     info!(path = %secret_file.display(), "Secret written to file");
 
     Ok(())
@@ -512,39 +510,5 @@ pub fn claim_bitcoin(args: ClaimBtcArgs) -> Result<()> {
     );
 
     info!("Cross-chain atomic swap fully completed. All parties have received their assets");
-    Ok(())
-}
-
-/// Writes the generated secret and related data to a file with restricted permissions.
-///
-/// The file is created with mode 0600 (owner read/write only) to protect the secret.
-/// The format is a simple key-value text file for easy parsing.
-fn write_secret_to_file(
-    path: &Path,
-    secret: &[u8; 32],
-    secret_hash: &[u8; 32],
-    lock_txid: &Txid,
-) -> Result<()> {
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
-    }
-
-    // Create file with restricted permissions (Unix only)
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)
-        .with_context(|| format!("Failed to create secret file: {}", path.display()))?;
-
-    writeln!(file, "# Atomic Swap Secret File")?;
-    writeln!(file, "SECRET={}", hex::encode(secret))?;
-    writeln!(file, "SECRET_HASH={}", hex::encode(secret_hash))?;
-    writeln!(file, "LOCK_TXID={lock_txid}")?;
-
     Ok(())
 }

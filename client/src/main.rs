@@ -12,7 +12,7 @@
 //! - `claim-btc`: Claim Bitcoin using revealed secret (seller, step 4)
 //! - `cancel-commit`: Cancel an expired or unwanted commitment
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand};
@@ -23,6 +23,7 @@ pub mod eth;
 pub mod execute;
 pub mod sol;
 pub mod types;
+pub mod utils;
 
 use types::{
     CancelCommitArgs, Chain, ClaimBtcArgs, CommitForMintArgs, LockBtcArgs, MintWithSecretArgs,
@@ -278,7 +279,7 @@ async fn main() -> Result<()> {
                 btc_rpc,
                 btc_user,
                 btc_pass,
-                btc_network: btc::utils::parse_btc_network(&btc_network)?,
+                btc_network: utils::parse_btc_network(&btc_network)?,
                 buyer_btc_key,
                 seller_btc_pubkey,
                 btc_amount,
@@ -331,7 +332,7 @@ async fn main() -> Result<()> {
                 name,
                 symbol,
                 // Common fields
-                secret_hash: decode_hex_hash(&secret_hash, "secret hash")?,
+                secret_hash: utils::decode_hex_hash(&secret_hash, "secret hash")?,
                 token_id,
                 nft_price,
                 metadata_uri,
@@ -383,7 +384,7 @@ async fn main() -> Result<()> {
                 .parse::<Chain>()
                 .context("Invalid chain specification")?;
 
-            let secret_bytes = resolve_secret(secret, secret_file)?;
+            let secret_bytes = utils::resolve_secret(secret, secret_file)?;
 
             let args = MintWithSecretArgs {
                 chain: chain.clone(),
@@ -446,14 +447,14 @@ async fn main() -> Result<()> {
             timeout,
             destination,
         } => {
-            let network = btc::utils::parse_btc_network(&btc_network)?;
+            let network = utils::parse_btc_network(&btc_network)?;
 
             // Resolve secret from either --secret or --secret-file
             let (secret_bytes, file_secret_hash, file_lock_txid) =
-                resolve_secret_with_metadata(secret, secret_file.clone())?;
+                utils::resolve_secret_with_metadata(secret, secret_file.clone())?;
 
             let final_secret_hash = secret_hash
-                .map(|h| decode_hex_hash(&h, "secret hash"))
+                .map(|h| utils::decode_hex_hash(&h, "secret hash"))
                 .transpose()?
                 .or(file_secret_hash)
                 .ok_or_else(|| {
@@ -482,7 +483,7 @@ async fn main() -> Result<()> {
                 lock_vout,
                 timeout,
                 destination: destination
-                    .map(|s| btc::utils::parse_btc_address(&s, network))
+                    .map(|s| utils::parse_btc_address(&s, network))
                     .transpose()?,
             };
 
@@ -548,129 +549,5 @@ async fn main() -> Result<()> {
 
             execute::cancel_commitment(args).await
         }
-    }
-}
-
-/// Decodes a hex-encoded 32-byte hash value.
-///
-/// # Errors
-///
-/// Returns an error if the hex string is invalid or not exactly 32 bytes.
-fn decode_hex_hash(hex_str: &str, field_name: &str) -> Result<[u8; 32]> {
-    hex::decode(hex_str)
-        .with_context(|| format!("Invalid hex encoding for {field_name}"))
-        .and_then(|bytes| {
-            bytes.try_into().map_err(|v: Vec<u8>| {
-                anyhow!(
-                    "Invalid {field_name} length: expected 32 bytes, got {}",
-                    v.len()
-                )
-            })
-        })
-}
-
-/// Decodes a hex-encoded 32-byte secret.
-fn decode_hex_secret(hex_str: &str) -> Result<[u8; 32]> {
-    decode_hex_hash(hex_str, "secret")
-}
-
-/// Resolves a secret from either a direct hex string or a file.
-///
-/// # Errors
-///
-/// Returns an error if neither or both sources are provided.
-fn resolve_secret(secret: Option<String>, secret_file: Option<PathBuf>) -> Result<[u8; 32]> {
-    match (secret, secret_file) {
-        (Some(s), None) => decode_hex_secret(&s),
-        (None, Some(path)) => {
-            let (secret_bytes, _, _) = parse_secret_file(&path)?;
-            Ok(secret_bytes)
-        }
-        (None, None) => Err(anyhow!("Either --secret or --secret-file must be provided")),
-        (Some(_), Some(_)) => Err(anyhow!("--secret and --secret-file are mutually exclusive")),
-    }
-}
-
-/// Secret file data: (secret, optional secret_hash, optional lock_txid).
-type SecretFileData = ([u8; 32], Option<[u8; 32]>, Option<bitcoin::Txid>);
-
-/// Resolves a secret and optional metadata from either a direct hex string or a file.
-///
-/// When reading from a file, also extracts the secret hash and lock txid if present.
-///
-/// # Errors
-///
-/// Returns an error if neither or both sources are provided.
-fn resolve_secret_with_metadata(
-    secret: Option<String>,
-    secret_file: Option<PathBuf>,
-) -> Result<SecretFileData> {
-    match (secret, secret_file) {
-        (Some(s), None) => Ok((decode_hex_secret(&s)?, None, None)),
-        (None, Some(path)) => {
-            let (secret_bytes, secret_hash, lock_txid) = parse_secret_file(&path)?;
-            Ok((secret_bytes, secret_hash, lock_txid))
-        }
-        (None, None) => Err(anyhow!("Either --secret or --secret-file must be provided")),
-        (Some(_), Some(_)) => Err(anyhow!("--secret and --secret-file are mutually exclusive")),
-    }
-}
-
-/// Parses a secret file in the format generated by lock_bitcoin.
-///
-/// The file format is:
-/// ```text
-/// SECRET=<hex>
-/// SECRET_HASH=<hex>
-/// LOCK_TXID=<txid>
-/// ```
-///
-/// Lines starting with `#` are treated as comments and ignored.
-fn parse_secret_file(path: &Path) -> Result<SecretFileData> {
-    use std::collections::HashMap;
-
-    let content = std::fs::read_to_string(path)
-        .with_context(|| format!("Failed to read secret file: {}", path.display()))?;
-
-    let entries = content
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with('#'))
-        .filter_map(|line| line.split_once('='))
-        .map(|(k, v)| (k.trim(), v.trim()))
-        .collect::<HashMap<&str, &str>>();
-
-    let secret = entries
-        .get("SECRET")
-        .ok_or_else(|| anyhow!("SECRET not found in file: {}", path.display()))
-        .and_then(|v| decode_hex_secret(v))?;
-
-    let secret_hash = entries
-        .get("SECRET_HASH")
-        .map(|v| decode_hex_hash(v, "secret hash"))
-        .transpose()?;
-
-    let lock_txid = entries
-        .get("LOCK_TXID")
-        .map(|v| v.parse().context("Invalid LOCK_TXID in secret file"))
-        .transpose()?;
-
-    Ok((secret, secret_hash, lock_txid))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_decode_hex_hash() {
-        let valid_hash = "a".repeat(64); // 32 bytes in hex
-        assert!(decode_hex_hash(&valid_hash, "test").is_ok());
-
-        let invalid_length = "a".repeat(30); // 15 bytes in hex
-        assert!(decode_hex_hash(&invalid_length, "test").is_err());
-
-        let invalid_hex = "zz".repeat(32);
-        assert!(decode_hex_hash(&invalid_hex, "test").is_err());
     }
 }

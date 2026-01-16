@@ -19,7 +19,7 @@ use bitcoin::{
 };
 use btc_htlc::{Contract as BtcContract, HtlcCondition};
 
-use super::utils::UtxoInfo;
+use crate::types::UtxoInfo;
 
 /// Bitcoin transaction signer with support for multiple script types.
 ///
