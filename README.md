@@ -112,7 +112,16 @@ cancel_commit --chain <eth|sol>
 cancel_commit --chain eth --token-id 5
 ```
 
-**NOTE**: The above commands `lock_btc`, `commit_for_mint`, `mint_with_secret`, `claim_btc`, and `cancel_commit` work the same in the local setup case as in the Dockerized case.
+#### Refund Bitcoin
+
+If the timeout specified in the lock transaction expires, the buyer can reclaim the locked HTLC funds:
+
+```bash
+# Reclaim BTC after timeout expiry (buyer only)
+refund_btc --secret-file .swap/secrets/swap.secret
+```
+
+**NOTE**: The above commands `lock_btc`, `commit_for_mint`, `mint_with_secret`, `claim_btc`, `cancel_commit`, and `refund_btc` work the same in the local setup case as in the Dockerized case.
 
 ### Local Setup & Demo
 
