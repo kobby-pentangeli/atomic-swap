@@ -7,8 +7,9 @@
 //! 3. Mint NFT by revealing the secret
 //! 4. Claim Bitcoin using the revealed secret
 //!
-//! Additionally, it provides a cancellation mechanism:
+//! Additionally, it provides recovery mechanisms:
 //! - Cancel NFT commitment (seller only before timeout, anyone after timeout)
+//! - Refund Bitcoin from HTLC after timeout expiry (buyer only)
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -220,6 +221,23 @@ pub async fn cancel_commitment(args: CancelCommitArgs) -> Result<()> {
 }
 
 /// Refunds Bitcoin to the buyer from an HTLC after timeout expiry.
+///
+/// This is a recovery mechanism for the buyer when the swap fails to complete.
+/// If the seller never claims the Bitcoin (e.g., the buyer never minted the NFT
+/// or the swap was abandoned), the buyer can reclaim their locked funds after
+/// the timeout period has passed.
+///
+/// # Prerequisites
+///
+/// - The HTLC timeout (specified during lock) must have expired
+/// - The secret file from the original lock transaction must be available
+/// - The funds must not have been claimed by the seller
+///
+/// # Security
+///
+/// Only the buyer (who locked the funds) can execute this refund, as it
+/// requires the buyer's private key to sign the timeout spending path.
+#[instrument(skip_all)]
 pub fn refund_bitcoin(args: RefundBtcArgs) -> Result<()> {
     info!("Refunding Bitcoin from HTLC (timeout expiry)");
 

@@ -448,6 +448,56 @@ cancel_commit() {
     esac
 }
 
+# Refund Bitcoin from HTLC after timeout expiry (buyer only)
+refund_btc() {
+    local secret_file=""
+
+    # Parse arguments
+    while [ \$# -gt 0 ]; do
+        case "\$1" in
+            --secret-file)
+                secret_file="\$2"
+                shift 2
+                ;;
+            *)
+                # Positional argument (secret file path)
+                if [ -z "\$secret_file" ]; then
+                    secret_file="\$1"
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    # Default to standard secret file location
+    if [ -z "\$secret_file" ]; then
+        secret_file=".swap/secrets/swap.secret"
+    fi
+
+    if [ ! -f "\$secret_file" ]; then
+        echo "Error: Secret file not found: \$secret_file"
+        echo ""
+        echo "Usage: refund_btc [--secret-file <PATH>]"
+        echo ""
+        echo "Refunds locked Bitcoin to the buyer after the HTLC timeout expires."
+        echo "Requires the secret file generated during lock_btc."
+        echo ""
+        echo "If --secret-file is not specified, defaults to .swap/secrets/swap.secret"
+        return 1
+    fi
+
+    RUST_LOG=info ./target/release/client refund-btc \\
+        --btc-rpc "\$BTC_RPC_URL" \\
+        --btc-user "\$BTC_RPC_USER" \\
+        --btc-pass "\$BTC_RPC_PASSWORD" \\
+        --btc-network "\$BTC_NETWORK" \\
+        --buyer-btc-key "\$BUYER_BTC_PRIVKEY" \\
+        --seller-btc-pubkey "\$SELLER_BTC_PUBKEY" \\
+        --secret-file "\$secret_file" \\
+        --lock-vout 0 \\
+        --timeout "\$HTLC_TIMEOUT"
+}
+
 # Graceful shutdown
 stop_services() {
     echo "Stopping all demo services..."
@@ -491,6 +541,7 @@ echo "  commit_for_mint    - Seller commits to mint (requires secret hash)"
 echo "  mint_with_secret   - Buyer mints the NFT with secret reveal"
 echo "  claim_btc          - Seller claims Bitcoin (requires secret, hash, txid)"
 echo "  cancel_commit      - Cancel an expired commitment (seller only)"
+echo "  refund_btc         - Reclaim Bitcoin after timeout expiry (buyer only)"
 echo "  stop_services      - Stop all running services"
 echo ""
 echo "Bitcoin RPC: \$BTC_RPC_URL"
