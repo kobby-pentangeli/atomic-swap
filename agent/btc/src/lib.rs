@@ -372,4 +372,57 @@ mod tests {
         assert!(reveal_size > timeout_size);
         assert!(reveal_size > 100);
     }
+
+    #[test]
+    fn create_witness_reveal_path() {
+        let (_, seller_pk) = create_test_keypair();
+        let (_, buyer_pk) = create_test_keypair();
+        let secret = generate_random_secret();
+        let secret_hash = hash_secret(&secret);
+
+        let contract = Contract::new(HtlcParams {
+            secret_hash,
+            seller: seller_pk,
+            buyer: buyer_pk,
+            timeout: 800144,
+            network: Network::Regtest,
+        });
+
+        let dummy_sig = vec![0x30, 0x44, 0x02, 0x20]; // Partial DER prefix
+
+        let witness = contract
+            .create_witness(HtlcCondition::Reveal { secret }, dummy_sig.clone())
+            .unwrap();
+
+        // Witness should have 4 elements: signature, secret, TRUE (0x01), script
+        assert_eq!(witness.len(), 4);
+        assert_eq!(witness.nth(1).unwrap(), &secret[..]);
+        assert_eq!(witness.nth(2).unwrap(), &[0x01]);
+    }
+
+    #[test]
+    fn create_witness_timeout_path() {
+        let (_, seller_pk) = create_test_keypair();
+        let (_, buyer_pk) = create_test_keypair();
+        let secret = generate_random_secret();
+        let secret_hash = hash_secret(&secret);
+
+        let contract = Contract::new(HtlcParams {
+            secret_hash,
+            seller: seller_pk,
+            buyer: buyer_pk,
+            timeout: 800144,
+            network: Network::Regtest,
+        });
+
+        let dummy_sig = vec![0x30, 0x44, 0x02, 0x20];
+
+        let witness = contract
+            .create_witness(HtlcCondition::Timeout, dummy_sig)
+            .unwrap();
+
+        // Witness should have 3 elements: signature, FALSE (empty), script
+        assert_eq!(witness.len(), 3);
+        assert!(witness.nth(1).unwrap().is_empty());
+    }
 }
