@@ -2,13 +2,12 @@
 
 set -e
 
-SETUP_DIR="$(pwd)"
-BITCOIN_DATA_DIR="$SETUP_DIR/.bitcoin"
-BITCOIN_CONF="$BITCOIN_DATA_DIR/bitcoin.conf"
-SWAP_DIR="$SETUP_DIR/.swap"
-LOG_FILE="$SWAP_DIR/setup.log"
+# Set base directory before sourcing config
+export SETUP_DIR="$(pwd)"
 
+# Source shared configuration and scripts
 source "$SETUP_DIR/scripts/logging.sh"
+source "$SETUP_DIR/scripts/config.sh"
 source "$SETUP_DIR/scripts/prerequisites.sh"
 source "$SETUP_DIR/scripts/bitcoin.sh"
 source "$SETUP_DIR/scripts/ethereum.sh"
@@ -18,7 +17,7 @@ source "$SETUP_DIR/scripts/verify.sh"
 source "$SETUP_DIR/scripts/instructions.sh"
 
 main() {
-    log "Starting cross-chain atomic swap setup..."
+    log "Starting cross-chain atomic swap setup (local environment)..."
     mkdir -p "$SWAP_DIR"
 
     log "Demo outputs directory: $SWAP_DIR"
