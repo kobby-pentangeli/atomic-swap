@@ -23,7 +23,7 @@ use anchor_spl::metadata::{create_metadata_accounts_v3, CreateMetadataAccountsV3
 use anchor_spl::token::{mint_to, Mint, MintTo, Token, TokenAccount};
 use sha2::{Digest, Sha256};
 
-declare_id!("Htp3Lm1W6dRgDjVtS89unkgUHJwijXkkseyaCHHdsZKG");
+declare_id!("2geXhC16Hc9Q9QBP4DQZx2xxUumXHLS5ugYqXwSB4jXo");
 
 /// Maximum length of the NFT name in bytes.
 pub const MAX_NAME_LEN: usize = 32;
