@@ -11,6 +11,7 @@
 //! - `mint-with-secret`: Mint NFT by revealing secret (buyer, step 3)
 //! - `claim-btc`: Claim Bitcoin using revealed secret (seller, step 4)
 //! - `cancel-commit`: Cancel an expired or unwanted commitment
+//! - `refund-btc`: Reclaim Bitcoin from the HTLC after timeout expiry (buyer only)
 
 use std::path::PathBuf;
 
