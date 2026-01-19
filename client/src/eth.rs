@@ -9,6 +9,7 @@
 //! - Querying commitment status and validity
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow};
 use ethers::abi::Abi;
@@ -18,9 +19,14 @@ use ethers::providers::{Http, Middleware, Provider};
 use ethers::signers::{LocalWallet, Signer};
 use ethers::types::{Address, H256, U256};
 use serde_json::Value;
-use tracing::info;
+use tokio::time::sleep;
+use tracing::{debug, info};
 
-use crate::types::CommitmentInfo;
+use crate::types::{
+    CancelCommitArgs, CancelResult, CommitForMintArgs, CommitResult, CommitmentInfo, MintResult,
+    MintWithSecretArgs,
+};
+use crate::utils::{MINT_AVAILABILITY_TIMEOUT, MINT_CHECK_INTERVAL};
 
 /// Embedded contract ABI for encoding/decoding calls and events.
 const NFT_SECRET_MINT_JSON: &str = include_str!("../../agent/eth/abi/NFTSecretMint.json");
@@ -292,4 +298,168 @@ impl EthClient {
     pub fn get_address(&self) -> Address {
         self.wallet.address()
     }
+}
+
+/// Commits an NFT for minting on Ethereum.
+pub async fn commit_for_mint(args: CommitForMintArgs) -> Result<CommitResult> {
+    debug!("Executing NFT commitment for minting");
+
+    let rpc_url = args.eth_rpc.as_ref().unwrap();
+    let contract_addr = args.nft_contract.as_ref().unwrap();
+    let token_id = args.token_id;
+    let nft_price = args.nft_price;
+    let metadata_uri = args.metadata_uri;
+    let secret_hash = args.secret_hash;
+    let private_key = args.seller_eth_key.as_ref().unwrap();
+
+    let client = EthClient::new(rpc_url, private_key, *contract_addr)
+        .await
+        .context("Failed to initialize Ethereum client")?;
+
+    debug!(
+        seller_address = %client.get_address(),
+        "Connected to Ethereum as seller"
+    );
+
+    match client.get_commitment(U256::from(token_id)).await {
+        Ok(commitment) if commitment.is_active => {
+            return Err(anyhow!(
+                "Token {token_id} already has an active commitment from seller {:?}",
+                commitment.seller
+            ));
+        }
+        Ok(_) => {
+            debug!("No existing commitment found, proceeding");
+        }
+        Err(e) => {
+            debug!(error = %e, "Error checking existing commitment, proceeding anyway");
+        }
+    }
+
+    let tx_hash = client
+        .commit_for_mint(
+            H256(secret_hash),
+            U256::from(token_id),
+            U256::from(nft_price),
+            args.buyer_address,
+            metadata_uri.clone(),
+        )
+        .await
+        .context("Failed to commit NFT for minting")?;
+
+    debug!(
+        tx_hash = %tx_hash,
+        token_id = %token_id,
+        price_wei = %nft_price,
+        metadata_uri = %metadata_uri,
+        "NFT commitment transaction submitted"
+    );
+
+    Ok(CommitResult {
+        chain: args.chain.as_ref().to_string(),
+        tx_id: format!("{tx_hash:?}"),
+        token_id,
+        price: format!("{nft_price} wei"),
+        metadata_uri,
+    })
+}
+
+/// Mints an NFT on Ethereum by revealing the secret.
+///
+/// Waits for the minimum commitment time to pass before attempting to mint.
+/// The revealed secret can then be used by the seller to claim the locked Bitcoin.
+pub async fn mint_with_secret(args: MintWithSecretArgs) -> Result<MintResult> {
+    debug!("Executing NFT mint with secret reveal");
+
+    let rpc_url = args.eth_rpc.as_ref().unwrap();
+    let contract_addr = args.nft_contract.as_ref().unwrap();
+    let token_id = args.token_id;
+    let private_key = args.buyer_eth_key.as_ref().unwrap();
+    let secret = args.secret;
+
+    let client = EthClient::new(rpc_url, private_key, *contract_addr)
+        .await
+        .context("Failed to initialize Ethereum client")?;
+
+    let token_id_u256 = U256::from(token_id);
+    let secret_h256 = H256(secret);
+
+    if !client.can_mint_now(token_id_u256).await? {
+        debug!("Waiting for minimum commitment time to pass");
+        let wait_start = Instant::now();
+        loop {
+            if wait_start.elapsed() > MINT_AVAILABILITY_TIMEOUT {
+                return Err(anyhow!(
+                    "Timeout waiting for mint availability after {:?}",
+                    MINT_AVAILABILITY_TIMEOUT
+                ));
+            }
+
+            if client.can_mint_now(token_id_u256).await? {
+                debug!("Minimum commitment time passed, proceeding with mint");
+                break;
+            }
+
+            debug!("Mint not yet available, waiting {:?}", MINT_CHECK_INTERVAL);
+            sleep(MINT_CHECK_INTERVAL).await;
+        }
+    }
+
+    let tx_hash = client
+        .mint_with_secret(secret_h256, token_id_u256)
+        .await
+        .context("Failed to execute NFT mint transaction")?;
+
+    debug!(
+        tx_hash = %tx_hash,
+        secret_revealed = %hex::encode(secret),
+        "NFT minted successfully, secret revealed on Ethereum"
+    );
+
+    Ok(MintResult {
+        chain: args.chain.as_ref().to_string(),
+        tx_id: format!("{tx_hash:?}"),
+        token_id,
+        secret_revealed: hex::encode(secret),
+    })
+}
+
+/// Cancels an NFT commitment on Ethereum.
+///
+/// Only the seller can cancel before the commitment timeout. After the timeout
+/// has passed, anyone can cancel the commitment to clean up expired state.
+pub async fn cancel_commitment(args: CancelCommitArgs) -> Result<CancelResult> {
+    debug!("Executing Ethereum NFT commitment cancellation");
+
+    let rpc_url = args.eth_rpc.as_ref().unwrap();
+    let contract_addr = args.nft_contract.as_ref().unwrap();
+    let private_key = args.caller_eth_key.as_ref().unwrap();
+    let token_id = args.token_id;
+
+    let client = EthClient::new(rpc_url, private_key, *contract_addr)
+        .await
+        .context("Failed to initialize Ethereum client")?;
+
+    debug!(
+        caller_address = %client.get_address(),
+        token_id = %token_id,
+        "Connected to Ethereum, attempting to cancel commitment"
+    );
+
+    let tx_hash = client
+        .cancel_commitment(U256::from(token_id))
+        .await
+        .context("Failed to cancel commitment")?;
+
+    debug!(
+        tx_hash = %tx_hash,
+        token_id = %token_id,
+        "Commitment cancelled successfully"
+    );
+
+    Ok(CancelResult {
+        chain: args.chain.as_ref().to_string(),
+        tx_id: format!("{tx_hash:?}"),
+        token_id,
+    })
 }

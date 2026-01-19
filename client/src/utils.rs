@@ -1,3 +1,4 @@
+use core::time::Duration;
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -14,6 +15,12 @@ pub const DEFAULT_SECRETS_DIR: &str = ".swap/secrets";
 
 /// Default secret file name.
 pub const DEFAULT_SECRETS_FILE: &str = "swap.secret";
+
+/// Maximum time to wait for mint availability.
+pub const MINT_AVAILABILITY_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Interval between mint availability checks.
+pub const MINT_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Secret file data: (secret, optional secret_hash, optional lock_txid).
 type SecretFileData = ([u8; 32], Option<[u8; 32]>, Option<Txid>);

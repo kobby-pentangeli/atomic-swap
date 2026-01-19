@@ -12,14 +12,18 @@ use std::sync::Arc;
 
 use anchor_client::solana_sdk::commitment_config::CommitmentConfig;
 use anchor_client::solana_sdk::pubkey::Pubkey;
-use anchor_client::solana_sdk::signature::{Keypair, Signature, Signer};
+use anchor_client::solana_sdk::signature::{Keypair, Signature, Signer, read_keypair_file};
 use anchor_client::{Client, Cluster, Program};
 use anchor_lang::{solana_program, system_program};
 use anchor_spl::associated_token;
 use anchor_spl::metadata::mpl_token_metadata;
 use anyhow::{Context, Result, anyhow};
 use sol_htlc::{Commitment, MAX_NAME_LEN, MAX_SYMBOL_LEN, MAX_URI_LEN, ProgramState};
-use tracing::info;
+use tracing::{debug, info};
+
+use crate::types::{
+    CancelCommitArgs, CancelResult, CommitForMintArgs, CommitResult, MintResult, MintWithSecretArgs,
+};
 
 /// Solana client for sol-htlc program interactions.
 ///
@@ -310,4 +314,159 @@ impl SolClient {
             .context("Failed to fetch program state")?;
         Ok(program_state)
     }
+}
+
+/// Commits an NFT for minting on Solana.
+pub fn commit_for_mint(args: CommitForMintArgs) -> Result<CommitResult> {
+    debug!("Executing Solana NFT commitment for minting");
+
+    let program_id = args.program_id.as_ref().unwrap();
+    let keypair_path = args.seller_sol_keypair.as_ref().unwrap();
+    let rpc_url = args.sol_rpc.as_ref().unwrap();
+    let ws_url = args.sol_ws.as_ref().unwrap();
+
+    let token_id = args.token_id;
+    let secret_hash = args.secret_hash;
+    let name = args.name.as_ref().unwrap();
+    let symbol = args.symbol.as_ref().unwrap();
+    let metadata_uri = args.metadata_uri;
+    let nft_price = args.nft_price;
+
+    let payer = read_keypair_file(keypair_path).map_err(|e| anyhow!("{e}"))?;
+
+    let client = SolClient::new(payer, program_id, rpc_url, ws_url)
+        .context("Failed to initialize Solana client")?;
+
+    if !client.is_initialized() {
+        debug!("Program not initialized, attempting to initialize...");
+        let sig = client
+            .initialize()
+            .context("Failed to initialize Solana program")?;
+        debug!(signature = %sig, "Program initialized successfully");
+    }
+
+    match client.get_commitment(token_id) {
+        Ok(commitment) if !commitment.is_used => {
+            return Err(anyhow!(
+                "Token {token_id} already has an active commitment from {}",
+                commitment.seller
+            ));
+        }
+        Ok(_) => {
+            debug!("Commitment exists but is used, proceeding");
+        }
+        Err(e) => {
+            debug!(error = %e, "No existing commitment found, proceeding");
+        }
+    }
+
+    let sig = client
+        .commit_for_mint(
+            secret_hash,
+            token_id,
+            nft_price,
+            name.clone(),
+            symbol.clone(),
+            metadata_uri.clone(),
+        )
+        .context("Failed to commit NFT for minting on Solana")?;
+
+    debug!(
+        signature = %sig,
+        token_id = %token_id,
+        price_lamports = %nft_price,
+        name = %name,
+        symbol = %symbol,
+        metadata_uri = %metadata_uri,
+        "Solana NFT commitment transaction submitted"
+    );
+
+    Ok(CommitResult {
+        chain: args.chain.as_ref().to_string(),
+        tx_id: sig.to_string(),
+        token_id,
+        price: format!("{nft_price} lamports"),
+        metadata_uri,
+    })
+}
+
+/// Mints an NFT on Solana by revealing the secret.
+pub fn mint_with_secret(args: MintWithSecretArgs) -> Result<MintResult> {
+    debug!("Executing Solana NFT mint with secret reveal");
+
+    let rpc_url = args.sol_rpc.as_ref().unwrap();
+    let ws_url = args.sol_ws.as_ref().unwrap();
+    let program_id = args.program_id.as_ref().unwrap();
+    let keypair_path = args.buyer_sol_keypair.as_ref().unwrap();
+    let payer = read_keypair_file(keypair_path).map_err(|e| anyhow!("{e}"))?;
+
+    let client = SolClient::new(payer, program_id, rpc_url, ws_url)
+        .context("Failed to initialize Solana client")?;
+
+    debug!(
+        buyer_address = %client.pubkey(),
+        "Connected to Solana as buyer"
+    );
+
+    let token_id = args.token_id;
+    let secret = args.secret;
+
+    let sig = client
+        .mint_with_secret(secret, token_id)
+        .context("Failed to execute Solana NFT mint transaction")?;
+
+    debug!(
+        signature = %sig,
+        secret_revealed = %hex::encode(secret),
+        token_id = %token_id,
+        "Solana NFT minted successfully, secret revealed"
+    );
+
+    Ok(MintResult {
+        chain: args.chain.as_ref().to_string(),
+        tx_id: sig.to_string(),
+        token_id,
+        secret_revealed: hex::encode(secret),
+    })
+}
+
+/// Cancels an NFT commitment on Solana.
+///
+/// Only the seller who created the commitment can cancel it. The commitment
+/// must not have been used (NFT not yet minted).
+pub fn cancel_commitment(args: CancelCommitArgs) -> Result<CancelResult> {
+    debug!("Executing Solana NFT commitment cancellation");
+
+    let rpc_url = args.sol_rpc.as_ref().unwrap();
+    let ws_url = args.sol_ws.as_ref().unwrap();
+    let program_id = args.program_id.as_ref().unwrap();
+    let keypair_path = args.caller_sol_keypair.as_ref().unwrap();
+    let token_id = args.token_id;
+
+    let payer = read_keypair_file(keypair_path).map_err(|e| anyhow!("{e}"))?;
+
+    let client = SolClient::new(payer, program_id, rpc_url, ws_url)
+        .context("Failed to initialize Solana client")?;
+
+    debug!(
+        caller_address = %client.pubkey(),
+        token_id = %token_id,
+        "Connected to Solana, attempting to cancel commitment"
+    );
+
+    let sig = client
+        .cancel_commitment(token_id)
+        .context("Failed to cancel Solana commitment")?;
+
+    debug!(
+        signature = %sig,
+        token_id = %token_id,
+        "Solana commitment cancelled successfully"
+    );
+
+    Ok(CancelResult {
+        chain: args.chain.as_ref().to_string(),
+        tx_id: sig.to_string(),
+        token_id,
+    })
 }
