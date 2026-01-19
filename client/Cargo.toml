@@ -27,6 +27,7 @@ serde = { workspace = true }
 sha2 = { workspace = true }
 
 anyhow = "1.0"
+crossterm = "0.29"
 bitcoin = { version = "0.32", features = ["serde", "rand"] }
 bitcoincore-rpc = "0.19"
 clap = { version = "4.0", features = ["derive", "env"] }

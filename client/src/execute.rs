@@ -28,8 +28,9 @@ use crate::btc::BtcClient;
 use crate::eth::EthClient;
 use crate::sol::SolClient;
 use crate::types::{
-    CancelCommitArgs, Chain, ClaimBtcArgs, CommitForMintArgs, LockBtcArgs, MintWithSecretArgs,
-    RefundBtcArgs,
+    CancelCommitArgs, CancelResult, Chain, ClaimBtcArgs, ClaimBtcResult, CommitForMintArgs,
+    CommitResult, LockBtcArgs, LockBtcResult, MintResult, MintWithSecretArgs, RefundBtcArgs,
+    RefundBtcResult,
 };
 use crate::utils;
 
@@ -44,7 +45,7 @@ const MINT_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 /// This is the first step of the atomic swap. The buyer generates a secret,
 /// creates its hash, and locks Bitcoin that can be claimed by the seller
 /// only if they know the secret.
-pub fn lock_bitcoin(args: LockBtcArgs) -> Result<()> {
+pub fn lock_bitcoin(args: LockBtcArgs) -> Result<LockBtcResult> {
     info!("Executing Bitcoin HTLC");
 
     let buyer_keypair = utils::validate_btc_keypair(&args.buyer_btc_key, "buyer")?;
@@ -65,7 +66,7 @@ pub fn lock_bitcoin(args: LockBtcArgs) -> Result<()> {
     let btc_contract = BtcContract::new(contract_params);
     let htlc_address = btc_contract.address();
 
-    info!(
+    debug!(
         htlc_address = %htlc_address,
         seller_pubkey = %seller_pubkey,
         buyer_pubkey = %buyer_pubkey,
@@ -77,32 +78,37 @@ pub fn lock_bitcoin(args: LockBtcArgs) -> Result<()> {
     let btc_client = BtcClient::new(&args.btc_rpc, auth, args.btc_network, buyer_keypair)
         .context("Failed to initialize Bitcoin client")?;
 
-    info!("Initiating Bitcoin lock transaction");
+    debug!("Initiating Bitcoin lock transaction");
     let amount = Amount::from_sat(args.btc_amount);
 
     let lock_txid = btc_client
         .lock_funds(&btc_contract, amount)
         .context("Failed to lock Bitcoin funds")?;
 
-    info!(
+    debug!(
         txid = %lock_txid,
         amount_btc = %amount.to_btc(),
         htlc_address = %btc_contract.address(),
         "Bitcoin funds locked successfully"
     );
-    info!("Waiting for seller NFT commitment");
 
     debug!(secret = %hex::encode(secret_bytes), "Generated secret");
-    info!("SECRET_HASH: {}", hex::encode(secret_hash));
-    info!("LOCK_TXID: {lock_txid}");
 
     let secret_file = args.secret_output_file.unwrap_or_else(|| {
         PathBuf::from(utils::DEFAULT_SECRETS_DIR).join(utils::DEFAULT_SECRETS_FILE)
     });
     utils::write_secret_to_file(&secret_file, &secret_bytes, &secret_hash, &lock_txid)?;
-    info!(path = %secret_file.display(), "Secret written to file");
+    debug!(path = %secret_file.display(), "Secret written to file");
 
-    Ok(())
+    Ok(LockBtcResult {
+        txid: lock_txid.to_string(),
+        htlc_address: htlc_address.to_string(),
+        amount_sats: args.btc_amount,
+        amount_btc: amount.to_btc(),
+        secret_hash: hex::encode(secret_hash),
+        secret_file: secret_file.display().to_string(),
+        timeout_blocks: args.timeout,
+    })
 }
 
 /// Commits an NFT for minting on the specified chain.
@@ -110,7 +116,7 @@ pub fn lock_bitcoin(args: LockBtcArgs) -> Result<()> {
 /// This is step 2 of the atomic swap. After the buyer locks Bitcoin, the seller
 /// commits to minting an NFT using the same secret hash. The NFT can only be
 /// minted by revealing the secret.
-pub async fn commit_for_mint(args: CommitForMintArgs) -> Result<()> {
+pub async fn commit_for_mint(args: CommitForMintArgs) -> Result<CommitResult> {
     match args.chain {
         Chain::Ethereum => commit_for_mint_eth(args).await,
         Chain::Solana => tokio::task::spawn_blocking(move || commit_for_mint_sol(args)).await?,
@@ -122,7 +128,7 @@ pub async fn commit_for_mint(args: CommitForMintArgs) -> Result<()> {
 /// This is step 3 of the atomic swap. The buyer reveals the secret to mint
 /// the NFT. Once the secret is revealed on-chain, the seller can use it to
 /// claim the locked Bitcoin.
-pub async fn mint_with_secret(args: MintWithSecretArgs) -> Result<()> {
+pub async fn mint_with_secret(args: MintWithSecretArgs) -> Result<MintResult> {
     match args.chain {
         Chain::Ethereum => mint_with_secret_eth(args).await,
         Chain::Solana => tokio::task::spawn_blocking(move || mint_with_secret_sol(args)).await?,
@@ -140,8 +146,8 @@ pub async fn mint_with_secret(args: MintWithSecretArgs) -> Result<()> {
 /// The function verifies that the provided secret hashes to the expected
 /// value before attempting the claim.
 #[instrument(skip_all)]
-pub fn claim_bitcoin(args: ClaimBtcArgs) -> Result<()> {
-    info!(
+pub fn claim_bitcoin(args: ClaimBtcArgs) -> Result<ClaimBtcResult> {
+    debug!(
         lock_txid = %args.lock_txid,
         lock_vout = %args.lock_vout,
         "Executing Bitcoin claim with revealed secret"
@@ -156,7 +162,7 @@ pub fn claim_bitcoin(args: ClaimBtcArgs) -> Result<()> {
         ));
     }
 
-    info!(
+    debug!(
         secret_verified = true,
         secret_hash = %hex::encode(args.secret_hash),
         "Secret verification passed"
@@ -175,7 +181,7 @@ pub fn claim_bitcoin(args: ClaimBtcArgs) -> Result<()> {
     };
     let btc_contract = BtcContract::new(contract_params);
 
-    info!(
+    debug!(
         htlc_address = %btc_contract.address(),
         seller_pubkey = %seller_pubkey,
         buyer_pubkey = %buyer_pubkey,
@@ -186,25 +192,35 @@ pub fn claim_bitcoin(args: ClaimBtcArgs) -> Result<()> {
     let btc_client = BtcClient::new(&args.btc_rpc, auth, args.btc_network, seller_keypair)
         .context("Failed to initialize Bitcoin client")?;
 
+    let from_htlc = format!("{}:{}", args.lock_txid, args.lock_vout);
+    let destination = args
+        .destination
+        .as_ref()
+        .map(|d| d.to_string())
+        .unwrap_or_else(|| "seller wallet".to_string());
+
     let claim_txid = btc_client
         .claim_funds(
             &btc_contract,
             &args.secret,
             args.lock_txid,
             args.lock_vout,
-            args.destination.clone(),
+            args.destination,
         )
         .context("Failed to claim Bitcoin funds")?;
 
-    info!(
+    debug!(
         claim_txid = %claim_txid,
-        from_htlc = %format!("{}:{}", args.lock_txid, args.lock_vout),
-        destination = ?args.destination.as_ref().map(|d| d.to_string()).unwrap_or_else(|| "seller wallet".to_string()),
+        from_htlc = %from_htlc,
+        destination = %destination,
         "Bitcoin claimed successfully"
     );
 
-    info!("Cross-chain atomic swap fully completed. All parties have received their assets");
-    Ok(())
+    Ok(ClaimBtcResult {
+        txid: claim_txid.to_string(),
+        from_htlc,
+        destination,
+    })
 }
 
 /// Cancels an NFT commitment on the specified chain.
@@ -213,7 +229,7 @@ pub fn claim_bitcoin(args: ClaimBtcArgs) -> Result<()> {
 /// or allows anyone to clean up an expired commitment after the timeout period.
 /// On Ethereum, only the seller can cancel before timeout; after timeout, anyone
 /// can cancel. On Solana, only the seller can cancel.
-pub async fn cancel_commitment(args: CancelCommitArgs) -> Result<()> {
+pub async fn cancel_commitment(args: CancelCommitArgs) -> Result<CancelResult> {
     match args.chain {
         Chain::Ethereum => cancel_commitment_eth(args).await,
         Chain::Solana => tokio::task::spawn_blocking(move || cancel_commitment_sol(args)).await?,
@@ -238,8 +254,8 @@ pub async fn cancel_commitment(args: CancelCommitArgs) -> Result<()> {
 /// Only the buyer (who locked the funds) can execute this refund, as it
 /// requires the buyer's private key to sign the timeout spending path.
 #[instrument(skip_all)]
-pub fn refund_bitcoin(args: RefundBtcArgs) -> Result<()> {
-    info!("Refunding Bitcoin from HTLC (timeout expiry)");
+pub fn refund_bitcoin(args: RefundBtcArgs) -> Result<RefundBtcResult> {
+    debug!("Refunding Bitcoin from HTLC (timeout expiry)");
 
     let buyer_keypair = utils::validate_btc_keypair(&args.buyer_btc_key, "buyer")?;
     let buyer_pubkey = PublicKey::from(buyer_keypair.public_key());
@@ -256,7 +272,7 @@ pub fn refund_bitcoin(args: RefundBtcArgs) -> Result<()> {
     };
     let btc_contract = BtcContract::new(contract_params);
 
-    info!(
+    debug!(
         htlc_address = %btc_contract.address(),
         buyer_pubkey = %buyer_pubkey,
         seller_pubkey = %seller_pubkey,
@@ -267,28 +283,34 @@ pub fn refund_bitcoin(args: RefundBtcArgs) -> Result<()> {
     let btc_client = BtcClient::new(&args.btc_rpc, auth, args.btc_network, buyer_keypair)
         .context("Failed to initialize Bitcoin client")?;
 
+    let from_htlc = format!("{}:{}", lock_txid, args.lock_vout);
+    let destination = args
+        .destination
+        .as_ref()
+        .map(|d| d.to_string())
+        .unwrap_or_else(|| "buyer wallet".to_string());
+
     let refund_txid = btc_client
-        .refund_timeout(
-            &btc_contract,
-            lock_txid,
-            args.lock_vout,
-            args.destination.clone(),
-        )
+        .refund_timeout(&btc_contract, lock_txid, args.lock_vout, args.destination)
         .context("Failed to claim Bitcoin funds")?;
 
-    info!(
+    debug!(
         refund_txid = %refund_txid,
-        from_htlc = %format!("{}:{}", lock_txid, args.lock_vout),
-        destination = ?args.destination.as_ref().map(|d| d.to_string()).unwrap_or_else(|| "buyer wallet".to_string()),
+        from_htlc = %from_htlc,
+        destination = %destination,
         "Bitcoin refunded successfully"
     );
 
-    Ok(())
+    Ok(RefundBtcResult {
+        txid: refund_txid.to_string(),
+        from_htlc,
+        destination,
+    })
 }
 
 /// Commits an NFT for minting on Ethereum.
-async fn commit_for_mint_eth(args: CommitForMintArgs) -> Result<()> {
-    info!("Executing NFT commitment for minting");
+async fn commit_for_mint_eth(args: CommitForMintArgs) -> Result<CommitResult> {
+    debug!("Executing NFT commitment for minting");
 
     let rpc_url = args.eth_rpc.as_ref().unwrap();
     let contract_addr = args.nft_contract.as_ref().unwrap();
@@ -302,7 +324,7 @@ async fn commit_for_mint_eth(args: CommitForMintArgs) -> Result<()> {
         .await
         .context("Failed to initialize Ethereum client")?;
 
-    info!(
+    debug!(
         seller_address = %client.get_address(),
         "Connected to Ethereum as seller"
     );
@@ -333,22 +355,26 @@ async fn commit_for_mint_eth(args: CommitForMintArgs) -> Result<()> {
         .await
         .context("Failed to commit NFT for minting")?;
 
-    info!(
+    debug!(
         tx_hash = %tx_hash,
         token_id = %token_id,
         price_wei = %nft_price,
-        buyer_restriction = ?args.buyer_address,
         metadata_uri = %metadata_uri,
         "NFT commitment transaction submitted"
     );
 
-    info!("NFT commitment completed successfully. Buyer can now reveal secret to mint.");
-    Ok(())
+    Ok(CommitResult {
+        chain: args.chain.as_ref().to_string(),
+        tx_id: format!("{tx_hash:?}"),
+        token_id,
+        price: format!("{nft_price} wei"),
+        metadata_uri,
+    })
 }
 
 /// Commits an NFT for minting on Solana.
-fn commit_for_mint_sol(args: CommitForMintArgs) -> Result<()> {
-    info!("Executing Solana NFT commitment for minting");
+fn commit_for_mint_sol(args: CommitForMintArgs) -> Result<CommitResult> {
+    debug!("Executing Solana NFT commitment for minting");
 
     let program_id = args.program_id.as_ref().unwrap();
     let keypair_path = args.seller_sol_keypair.as_ref().unwrap();
@@ -368,11 +394,11 @@ fn commit_for_mint_sol(args: CommitForMintArgs) -> Result<()> {
         .context("Failed to initialize Solana client")?;
 
     if !client.is_initialized() {
-        info!("Program not initialized, attempting to initialize...");
+        debug!("Program not initialized, attempting to initialize...");
         let sig = client
             .initialize()
             .context("Failed to initialize Solana program")?;
-        info!(signature = %sig, "Program initialized successfully");
+        debug!(signature = %sig, "Program initialized successfully");
     }
 
     match client.get_commitment(token_id) {
@@ -401,7 +427,7 @@ fn commit_for_mint_sol(args: CommitForMintArgs) -> Result<()> {
         )
         .context("Failed to commit NFT for minting on Solana")?;
 
-    info!(
+    debug!(
         signature = %sig,
         token_id = %token_id,
         price_lamports = %nft_price,
@@ -411,16 +437,21 @@ fn commit_for_mint_sol(args: CommitForMintArgs) -> Result<()> {
         "Solana NFT commitment transaction submitted"
     );
 
-    info!("Solana NFT commitment completed successfully. Buyer can now reveal secret to mint.");
-    Ok(())
+    Ok(CommitResult {
+        chain: args.chain.as_ref().to_string(),
+        tx_id: sig.to_string(),
+        token_id,
+        price: format!("{nft_price} lamports"),
+        metadata_uri,
+    })
 }
 
 /// Mints an NFT on Ethereum by revealing the secret.
 ///
 /// Waits for the minimum commitment time to pass before attempting to mint.
 /// The revealed secret can then be used by the seller to claim the locked Bitcoin.
-async fn mint_with_secret_eth(args: MintWithSecretArgs) -> Result<()> {
-    info!("Executing NFT mint with secret reveal");
+async fn mint_with_secret_eth(args: MintWithSecretArgs) -> Result<MintResult> {
+    debug!("Executing NFT mint with secret reveal");
 
     let rpc_url = args.eth_rpc.as_ref().unwrap();
     let contract_addr = args.nft_contract.as_ref().unwrap();
@@ -432,11 +463,11 @@ async fn mint_with_secret_eth(args: MintWithSecretArgs) -> Result<()> {
         .await
         .context("Failed to initialize Ethereum client")?;
 
-    let token_id = U256::from(token_id);
-    let secret = H256(secret);
+    let token_id_u256 = U256::from(token_id);
+    let secret_h256 = H256(secret);
 
-    if !client.can_mint_now(token_id).await? {
-        info!("Waiting for minimum commitment time to pass");
+    if !client.can_mint_now(token_id_u256).await? {
+        debug!("Waiting for minimum commitment time to pass");
         let wait_start = Instant::now();
         loop {
             if wait_start.elapsed() > MINT_AVAILABILITY_TIMEOUT {
@@ -446,8 +477,8 @@ async fn mint_with_secret_eth(args: MintWithSecretArgs) -> Result<()> {
                 ));
             }
 
-            if client.can_mint_now(token_id).await? {
-                info!("Minimum commitment time passed, proceeding with mint");
+            if client.can_mint_now(token_id_u256).await? {
+                debug!("Minimum commitment time passed, proceeding with mint");
                 break;
             }
 
@@ -456,58 +487,71 @@ async fn mint_with_secret_eth(args: MintWithSecretArgs) -> Result<()> {
         }
     }
 
-    let txid = client
-        .mint_with_secret(secret, token_id)
+    let tx_hash = client
+        .mint_with_secret(secret_h256, token_id_u256)
         .await
         .context("Failed to execute NFT mint transaction")?;
 
-    info!(
-        tx_hash = %txid,
+    debug!(
+        tx_hash = %tx_hash,
         secret_revealed = %hex::encode(secret),
         "NFT minted successfully, secret revealed on Ethereum"
     );
 
-    Ok(())
+    Ok(MintResult {
+        chain: args.chain.as_ref().to_string(),
+        tx_id: format!("{tx_hash:?}"),
+        token_id,
+        secret_revealed: hex::encode(secret),
+    })
 }
 
 /// Mints an NFT on Solana by revealing the secret.
-fn mint_with_secret_sol(args: MintWithSecretArgs) -> Result<()> {
-    info!("Executing Solana NFT mint with secret reveal");
+fn mint_with_secret_sol(args: MintWithSecretArgs) -> Result<MintResult> {
+    debug!("Executing Solana NFT mint with secret reveal");
 
     let rpc_url = args.sol_rpc.as_ref().unwrap();
     let ws_url = args.sol_ws.as_ref().unwrap();
     let program_id = args.program_id.as_ref().unwrap();
     let keypair_path = args.buyer_sol_keypair.as_ref().unwrap();
-    let payer = read_keypair_file(keypair_path).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let payer = read_keypair_file(keypair_path).map_err(|e| anyhow!("{e}"))?;
 
     let client = SolClient::new(payer, program_id, rpc_url, ws_url)
         .context("Failed to initialize Solana client")?;
 
-    info!(
+    debug!(
         buyer_address = %client.pubkey(),
         "Connected to Solana as buyer"
     );
 
+    let token_id = args.token_id;
+    let secret = args.secret;
+
     let sig = client
-        .mint_with_secret(args.secret, args.token_id)
+        .mint_with_secret(secret, token_id)
         .context("Failed to execute Solana NFT mint transaction")?;
 
-    info!(
+    debug!(
         signature = %sig,
-        secret_revealed = %hex::encode(args.secret),
-        token_id = %args.token_id,
+        secret_revealed = %hex::encode(secret),
+        token_id = %token_id,
         "Solana NFT minted successfully, secret revealed"
     );
 
-    Ok(())
+    Ok(MintResult {
+        chain: args.chain.as_ref().to_string(),
+        tx_id: sig.to_string(),
+        token_id,
+        secret_revealed: hex::encode(secret),
+    })
 }
 
 /// Cancels an NFT commitment on Ethereum.
 ///
 /// Only the seller can cancel before the commitment timeout. After the timeout
 /// has passed, anyone can cancel the commitment to clean up expired state.
-async fn cancel_commitment_eth(args: CancelCommitArgs) -> Result<()> {
-    info!("Executing Ethereum NFT commitment cancellation");
+async fn cancel_commitment_eth(args: CancelCommitArgs) -> Result<CancelResult> {
+    debug!("Executing Ethereum NFT commitment cancellation");
 
     let rpc_url = args.eth_rpc.as_ref().unwrap();
     let contract_addr = args.nft_contract.as_ref().unwrap();
@@ -518,7 +562,7 @@ async fn cancel_commitment_eth(args: CancelCommitArgs) -> Result<()> {
         .await
         .context("Failed to initialize Ethereum client")?;
 
-    info!(
+    debug!(
         caller_address = %client.get_address(),
         token_id = %token_id,
         "Connected to Ethereum, attempting to cancel commitment"
@@ -529,21 +573,25 @@ async fn cancel_commitment_eth(args: CancelCommitArgs) -> Result<()> {
         .await
         .context("Failed to cancel commitment")?;
 
-    info!(
+    debug!(
         tx_hash = %tx_hash,
         token_id = %token_id,
         "Commitment cancelled successfully"
     );
 
-    Ok(())
+    Ok(CancelResult {
+        chain: args.chain.as_ref().to_string(),
+        tx_id: format!("{tx_hash:?}"),
+        token_id,
+    })
 }
 
 /// Cancels an NFT commitment on Solana.
 ///
 /// Only the seller who created the commitment can cancel it. The commitment
 /// must not have been used (NFT not yet minted).
-fn cancel_commitment_sol(args: CancelCommitArgs) -> Result<()> {
-    info!("Executing Solana NFT commitment cancellation");
+fn cancel_commitment_sol(args: CancelCommitArgs) -> Result<CancelResult> {
+    debug!("Executing Solana NFT commitment cancellation");
 
     let rpc_url = args.sol_rpc.as_ref().unwrap();
     let ws_url = args.sol_ws.as_ref().unwrap();
@@ -556,7 +604,7 @@ fn cancel_commitment_sol(args: CancelCommitArgs) -> Result<()> {
     let client = SolClient::new(payer, program_id, rpc_url, ws_url)
         .context("Failed to initialize Solana client")?;
 
-    info!(
+    debug!(
         caller_address = %client.pubkey(),
         token_id = %token_id,
         "Connected to Solana, attempting to cancel commitment"
@@ -566,11 +614,15 @@ fn cancel_commitment_sol(args: CancelCommitArgs) -> Result<()> {
         .cancel_commitment(token_id)
         .context("Failed to cancel Solana commitment")?;
 
-    info!(
+    debug!(
         signature = %sig,
         token_id = %token_id,
         "Solana commitment cancelled successfully"
     );
 
-    Ok(())
+    Ok(CancelResult {
+        chain: args.chain.as_ref().to_string(),
+        tx_id: sig.to_string(),
+        token_id,
+    })
 }

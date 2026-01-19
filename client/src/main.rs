@@ -1,8 +1,7 @@
 //! Cross-chain atomic swap CLI.
 //!
-//! Orchestrates the full
-//! swap lifecycle including locking funds, committing NFTs, revealing secrets,
-//! and claiming assets.
+//! Orchestrates the full swap lifecycle including locking funds, committing NFTs,
+//! revealing secrets, and claiming assets.
 //!
 //! # Commands
 //!
@@ -10,16 +9,20 @@
 //! - `commit-for-mint`: Commit NFT for minting (seller, step 2)
 //! - `mint-with-secret`: Mint NFT by revealing secret (buyer, step 3)
 //! - `claim-btc`: Claim Bitcoin using revealed secret (seller, step 4)
-//! - `cancel-commit`: Cancel an expired or unwanted commitment
-//! - `refund-btc`: Reclaim Bitcoin from the HTLC after timeout expiry (buyer only)
+//! - `cancel-commit`: Cancel an expired or unwanted commitment (seller)
+//! - `refund-btc`: Reclaim Bitcoin after timeout expiry (buyer)
+//!
+//! # Configuration
+//!
+//! Arguments can be provided via command-line flags or environment variables
+//! (loaded from `.env` file). Use `--no-env` to disable `.env` loading.
 
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, anyhow};
-use clap::{Parser, Subcommand};
+use clap::{ArgAction, Parser, Subcommand};
 
 pub mod btc;
-pub mod config;
 pub mod eth;
 pub mod execute;
 pub mod sol;
@@ -28,7 +31,7 @@ pub mod utils;
 
 use types::{
     CancelCommitArgs, Chain, ClaimBtcArgs, CommitForMintArgs, LockBtcArgs, MintWithSecretArgs,
-    RefundBtcArgs,
+    Printable, RefundBtcArgs, ResultFmt,
 };
 
 const DEFAULT_BTC_RPC_URL: &str = "http://localhost:18443";
@@ -39,40 +42,49 @@ const DEFAULT_SOL_WS_URL: &str = "ws://localhost:8900";
 #[derive(Parser)]
 #[command(name = "atomic-swap")]
 #[command(about = "A cross-chain atomic swap: Bitcoin for NFT")]
+#[command(version)]
 struct Cli {
+    /// Disable loading configuration from .env file
+    #[arg(long, global = true, action = ArgAction::SetTrue)]
+    no_env: bool,
+
+    /// Output format (human, json)
+    #[arg(short, long, global = true, default_value = "human")]
+    output: ResultFmt,
+
     #[command(subcommand)]
     command: Commands,
 }
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Buyer locks Bitcoin
+    /// Buyer locks Bitcoin in an HTLC
     LockBtc {
         /// Bitcoin RPC URL
-        #[arg(long, default_value = DEFAULT_BTC_RPC_URL)]
+        #[arg(long, env = "BTC_RPC_URL", default_value = DEFAULT_BTC_RPC_URL)]
         btc_rpc: String,
         /// Bitcoin RPC username
-        #[arg(long, default_value = "user")]
+        #[arg(long, env = "BTC_RPC_USER", default_value = "user")]
         btc_user: String,
         /// Bitcoin RPC password
-        #[arg(long, default_value = "password")]
+        #[arg(long, env = "BTC_RPC_PASSWORD", default_value = "password")]
         btc_pass: String,
-        /// Bitcoin network
-        #[arg(long, default_value = "regtest")]
+        /// Bitcoin network (mainnet, testnet, signet, regtest)
+        #[arg(long, env = "BTC_NETWORK", default_value = "regtest")]
         btc_network: String,
-        /// Buyer's Bitcoin private key
-        #[arg(long)]
+        /// Buyer's Bitcoin private key (WIF or hex)
+        #[arg(long, env = "BUYER_BTC_PRIVKEY")]
         buyer_btc_key: String,
-        /// Seller's Bitcoin public key
-        #[arg(long)]
+        /// Seller's Bitcoin public key (hex)
+        #[arg(long, env = "SELLER_BTC_PUBKEY")]
         seller_btc_pubkey: String,
         /// Amount of Bitcoin to lock (in satoshis)
-        #[arg(long, default_value = "100000")] // 0.001 BTC
+        #[arg(long, env = "BTC_AMOUNT", default_value = "100000")]
         btc_amount: u64,
         /// HTLC timeout in blocks
-        #[arg(long, default_value = "144")] // ~24 hours on Bitcoin
+        #[arg(long, env = "HTLC_TIMEOUT", default_value = "144")]
         timeout: u32,
-        /// File path to securely write the generated secret (optional)
+        /// File path to securely write the generated secret
         #[arg(long)]
         secret_output: Option<PathBuf>,
     },
@@ -84,37 +96,37 @@ enum Commands {
         chain: String,
 
         // Ethereum-specific options
-        /// Ethereum RPC URL (required if chain=eth)
-        #[arg(long, default_value = DEFAULT_ETH_RPC_URL)]
+        /// Ethereum RPC URL
+        #[arg(long, env = "ETH_RPC_URL", default_value = DEFAULT_ETH_RPC_URL)]
         eth_rpc: Option<String>,
-        /// Seller's Ethereum private key (required if chain=eth)
-        #[arg(long)]
+        /// Seller's Ethereum private key (hex with 0x prefix)
+        #[arg(long, env = "SELLER_ETH_PRIVKEY")]
         seller_eth_key: Option<String>,
-        /// NFT contract address (required if chain=eth)
-        #[arg(long)]
+        /// NFT contract address
+        #[arg(long, env = "NFT_CONTRACT_ADDRESS")]
         nft_contract: Option<String>,
-        /// Buyer's Ethereum address (optional, for restricted minting)
+        /// Buyer's Ethereum address (for restricted minting)
         #[arg(long)]
         buyer_address: Option<String>,
 
         // Solana-specific options
-        /// Solana RPC URL (required if chain=sol)
-        #[arg(long, default_value = DEFAULT_SOL_RPC_URL)]
+        /// Solana RPC URL
+        #[arg(long, env = "SOL_RPC_URL", default_value = DEFAULT_SOL_RPC_URL)]
         sol_rpc: Option<String>,
-        /// Solana WebSocket URL (required if chain=sol)
-        #[arg(long, default_value = DEFAULT_SOL_WS_URL)]
+        /// Solana WebSocket URL
+        #[arg(long, env = "SOL_WS_URL", default_value = DEFAULT_SOL_WS_URL)]
         sol_ws: Option<String>,
-        /// Seller's Solana keypair file path (required if chain=sol)
-        #[arg(long)]
+        /// Seller's Solana keypair file path
+        #[arg(long, env = "SELLER_SOL_KEYPAIR")]
         seller_sol_keypair: Option<String>,
-        /// Solana HTLC program ID (required if chain=sol)
-        #[arg(long)]
+        /// Solana HTLC program ID
+        #[arg(long, env = "SOL_PROGRAM_ID")]
         program_id: Option<String>,
-        /// NFT name (required if chain=sol)
-        #[arg(long)]
+        /// NFT name
+        #[arg(long, env = "NFT_NAME")]
         name: Option<String>,
-        /// NFT symbol (required if chain=sol)
-        #[arg(long)]
+        /// NFT symbol
+        #[arg(long, env = "NFT_SYMBOL")]
         symbol: Option<String>,
 
         // Common fields
@@ -122,14 +134,14 @@ enum Commands {
         #[arg(long)]
         secret_hash: String,
         /// Token ID to commit for minting
-        #[arg(long)]
-        token_id: u64,
+        #[arg(long, env = "TOKEN_ID")]
+        token_id: Option<u64>,
         /// NFT price (wei for Ethereum, lamports for Solana)
-        #[arg(long)]
-        nft_price: u64,
+        #[arg(long, env = "ETH_NFT_PRICE")]
+        nft_price: Option<u64>,
         /// NFT metadata URI
-        #[arg(long)]
-        metadata_uri: String,
+        #[arg(long, env = "METADATA_URI")]
+        metadata_uri: Option<String>,
     },
 
     /// Buyer reveals shared secret to mint NFT
@@ -139,28 +151,28 @@ enum Commands {
         chain: String,
 
         // Ethereum-specific options
-        /// Ethereum RPC URL (required if chain=eth)
-        #[arg(long, default_value = DEFAULT_ETH_RPC_URL)]
+        /// Ethereum RPC URL
+        #[arg(long, env = "ETH_RPC_URL", default_value = DEFAULT_ETH_RPC_URL)]
         eth_rpc: Option<String>,
-        /// Buyer's Ethereum private key (hex, required if chain=eth)
-        #[arg(long)]
+        /// Buyer's Ethereum private key (hex with 0x prefix)
+        #[arg(long, env = "BUYER_ETH_PRIVKEY")]
         buyer_eth_key: Option<String>,
-        /// NFT contract address (required if chain=eth)
-        #[arg(long)]
+        /// NFT contract address
+        #[arg(long, env = "NFT_CONTRACT_ADDRESS")]
         nft_contract: Option<String>,
 
         // Solana-specific options
-        /// Solana RPC URL (required if chain=sol)
-        #[arg(long, default_value = DEFAULT_SOL_RPC_URL)]
+        /// Solana RPC URL
+        #[arg(long, env = "SOL_RPC_URL", default_value = DEFAULT_SOL_RPC_URL)]
         sol_rpc: Option<String>,
-        /// Solana WebSocket URL (required if chain=sol)
-        #[arg(long, default_value = DEFAULT_SOL_WS_URL)]
+        /// Solana WebSocket URL
+        #[arg(long, env = "SOL_WS_URL", default_value = DEFAULT_SOL_WS_URL)]
         sol_ws: Option<String>,
-        /// Buyer's Solana keypair file path (required if chain=sol)
-        #[arg(long)]
+        /// Buyer's Solana keypair file path
+        #[arg(long, env = "BUYER_SOL_KEYPAIR")]
         buyer_sol_keypair: Option<String>,
-        /// Solana HTLC program ID (required if chain=sol)
-        #[arg(long)]
+        /// Solana HTLC program ID
+        #[arg(long, env = "SOL_PROGRAM_ID")]
         program_id: Option<String>,
 
         // Common fields
@@ -171,49 +183,49 @@ enum Commands {
         #[arg(long, conflicts_with = "secret")]
         secret_file: Option<PathBuf>,
         /// Token ID to mint
-        #[arg(long)]
-        token_id: u64,
+        #[arg(long, env = "TOKEN_ID")]
+        token_id: Option<u64>,
     },
 
     /// Seller claims Bitcoin using revealed secret
     ClaimBtc {
         /// Bitcoin RPC URL
-        #[arg(long, default_value = DEFAULT_BTC_RPC_URL)]
+        #[arg(long, env = "BTC_RPC_URL", default_value = DEFAULT_BTC_RPC_URL)]
         btc_rpc: String,
         /// Bitcoin RPC username
-        #[arg(long, default_value = "user")]
+        #[arg(long, env = "BTC_RPC_USER", default_value = "user")]
         btc_user: String,
         /// Bitcoin RPC password
-        #[arg(long, default_value = "password")]
+        #[arg(long, env = "BTC_RPC_PASSWORD", default_value = "password")]
         btc_pass: String,
-        /// Bitcoin network
-        #[arg(long, default_value = "regtest")]
+        /// Bitcoin network (mainnet, testnet, signet, regtest)
+        #[arg(long, env = "BTC_NETWORK", default_value = "regtest")]
         btc_network: String,
         /// Seller's Bitcoin private key (WIF format)
-        #[arg(long)]
+        #[arg(long, env = "SELLER_BTC_PRIVKEY")]
         seller_btc_key: String,
         /// Buyer's Bitcoin public key (hex)
-        #[arg(long)]
+        #[arg(long, env = "BUYER_BTC_PUBKEY")]
         buyer_btc_pubkey: String,
-        /// Secret revealed from Ethereum (hex, mutually exclusive with --secret-file)
+        /// Secret revealed from NFT chain (hex, mutually exclusive with --secret-file)
         #[arg(long, conflicts_with = "secret_file")]
         secret: Option<String>,
         /// File containing the secret (mutually exclusive with --secret)
         #[arg(long, conflicts_with = "secret")]
         secret_file: Option<PathBuf>,
-        /// Secret hash (hex, for verification; optional if using --secret-file)
+        /// Secret hash (hex, for verification)
         #[arg(long)]
         secret_hash: Option<String>,
-        /// Bitcoin transaction ID of the lock (optional if using --secret-file)
+        /// Bitcoin transaction ID of the lock
         #[arg(long)]
         lock_txid: Option<String>,
         /// Output index in the lock transaction
         #[arg(long, default_value = "0")]
         lock_vout: u32,
         /// HTLC timeout in blocks
-        #[arg(long, default_value = "144")]
+        #[arg(long, env = "HTLC_TIMEOUT", default_value = "144")]
         timeout: u32,
-        /// Destination address (optional)
+        /// Destination address for claimed Bitcoin
         #[arg(long)]
         destination: Option<String>,
     },
@@ -225,55 +237,55 @@ enum Commands {
         chain: String,
 
         // Ethereum-specific options
-        /// Ethereum RPC URL (required if chain=eth)
-        #[arg(long, default_value = DEFAULT_ETH_RPC_URL)]
+        /// Ethereum RPC URL
+        #[arg(long, env = "ETH_RPC_URL", default_value = DEFAULT_ETH_RPC_URL)]
         eth_rpc: Option<String>,
-        /// Caller's Ethereum private key (required if chain=eth)
-        #[arg(long)]
+        /// Caller's Ethereum private key (hex with 0x prefix)
+        #[arg(long, env = "SELLER_ETH_PRIVKEY")]
         caller_eth_key: Option<String>,
-        /// NFT contract address (required if chain=eth)
-        #[arg(long)]
+        /// NFT contract address
+        #[arg(long, env = "NFT_CONTRACT_ADDRESS")]
         nft_contract: Option<String>,
 
         // Solana-specific options
-        /// Solana RPC URL (required if chain=sol)
-        #[arg(long, default_value = DEFAULT_SOL_RPC_URL)]
+        /// Solana RPC URL
+        #[arg(long, env = "SOL_RPC_URL", default_value = DEFAULT_SOL_RPC_URL)]
         sol_rpc: Option<String>,
-        /// Solana WebSocket URL (required if chain=sol)
-        #[arg(long, default_value = DEFAULT_SOL_WS_URL)]
+        /// Solana WebSocket URL
+        #[arg(long, env = "SOL_WS_URL", default_value = DEFAULT_SOL_WS_URL)]
         sol_ws: Option<String>,
-        /// Caller's Solana keypair file path (required if chain=sol)
-        #[arg(long)]
+        /// Caller's Solana keypair file path
+        #[arg(long, env = "SELLER_SOL_KEYPAIR")]
         caller_sol_keypair: Option<String>,
-        /// Solana HTLC program ID (required if chain=sol)
-        #[arg(long)]
+        /// Solana HTLC program ID
+        #[arg(long, env = "SOL_PROGRAM_ID")]
         program_id: Option<String>,
 
         // Common fields
         /// Token ID of the commitment to cancel
-        #[arg(long)]
-        token_id: u64,
+        #[arg(long, env = "TOKEN_ID")]
+        token_id: Option<u64>,
     },
 
     /// Buyer withdraws Bitcoin from an HTLC after timeout expiry
     RefundBtc {
         /// Bitcoin RPC URL
-        #[arg(long, default_value = DEFAULT_BTC_RPC_URL)]
+        #[arg(long, env = "BTC_RPC_URL", default_value = DEFAULT_BTC_RPC_URL)]
         btc_rpc: String,
         /// Bitcoin RPC username
-        #[arg(long, default_value = "user")]
+        #[arg(long, env = "BTC_RPC_USER", default_value = "user")]
         btc_user: String,
         /// Bitcoin RPC password
-        #[arg(long, default_value = "password")]
+        #[arg(long, env = "BTC_RPC_PASSWORD", default_value = "password")]
         btc_pass: String,
-        /// Bitcoin network
-        #[arg(long, default_value = "regtest")]
+        /// Bitcoin network (mainnet, testnet, signet, regtest)
+        #[arg(long, env = "BTC_NETWORK", default_value = "regtest")]
         btc_network: String,
-        /// Buyer's Bitcoin private key
-        #[arg(long)]
+        /// Buyer's Bitcoin private key (WIF or hex)
+        #[arg(long, env = "BUYER_BTC_PRIVKEY")]
         buyer_btc_key: String,
-        /// Seller's Bitcoin public key
-        #[arg(long)]
+        /// Seller's Bitcoin public key (hex)
+        #[arg(long, env = "SELLER_BTC_PUBKEY")]
         seller_btc_pubkey: String,
         /// File containing the generated secret from the lock transaction
         #[arg(long)]
@@ -282,22 +294,42 @@ enum Commands {
         #[arg(long, default_value = "0")]
         lock_vout: u32,
         /// HTLC timeout in blocks
-        #[arg(long, default_value = "144")]
+        #[arg(long, env = "HTLC_TIMEOUT", default_value = "144")]
         timeout: u32,
-        /// Destination address (optional)
+        /// Destination address for refunded Bitcoin
         #[arg(long)]
         destination: Option<String>,
     },
 }
 
+/// Validates that a required field is present, returning an error if missing.
+fn require<T>(value: Option<T>, field_name: &str, env_var: &str) -> Result<T> {
+    value.ok_or_else(|| {
+        anyhow!(
+            "Missing required argument: --{} (or set {} env var)",
+            field_name.replace('_', "-"),
+            env_var
+        )
+    })
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize tracing. In order to view logs, run `RUST_LOG=info cargo run`
+    // Load .env file first (before parsing args) unless --no-env is present
+    // We check for --no-env manually since clap hasn't parsed yet
+    let args = std::env::args().collect::<Vec<String>>();
+    if !args.iter().any(|a| a == "--no-env") {
+        let _ = dotenvy::dotenv();
+    }
+
+    // Initialize tracing
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::filter::EnvFilter::from_default_env())
         .init();
 
     let cli = Cli::parse();
+
+    let output_format = cli.output;
 
     match cli.command {
         Commands::LockBtc {
@@ -323,7 +355,9 @@ async fn main() -> Result<()> {
                 secret_output_file: secret_output,
             };
 
-            execute::lock_bitcoin(args)
+            let result = execute::lock_bitcoin(args)?;
+            result.print(output_format);
+            Ok(())
         }
 
         Commands::CommitForMint {
@@ -347,9 +381,49 @@ async fn main() -> Result<()> {
                 .parse::<Chain>()
                 .context("Invalid chain specification")?;
 
+            let (token_id, nft_price, metadata_uri) = match &chain {
+                Chain::Ethereum => {
+                    require(
+                        seller_eth_key.as_ref(),
+                        "seller_eth_key",
+                        "SELLER_ETH_PRIVKEY",
+                    )?;
+                    require(
+                        nft_contract.as_ref(),
+                        "nft_contract",
+                        "NFT_CONTRACT_ADDRESS",
+                    )?;
+                    (
+                        require(token_id, "token_id", "TOKEN_ID")?,
+                        require(nft_price, "nft_price", "ETH_NFT_PRICE")?,
+                        require(metadata_uri, "metadata_uri", "METADATA_URI")?,
+                    )
+                }
+                Chain::Solana => {
+                    require(
+                        seller_sol_keypair.as_ref(),
+                        "seller_sol_keypair",
+                        "SELLER_SOL_KEYPAIR",
+                    )?;
+                    require(program_id.as_ref(), "program_id", "SOL_PROGRAM_ID")?;
+                    require(name.as_ref(), "name", "NFT_NAME")?;
+                    require(symbol.as_ref(), "symbol", "NFT_SYMBOL")?;
+                    (
+                        require(token_id, "token_id", "TOKEN_ID")?,
+                        nft_price
+                            .or_else(|| std::env::var("SOL_NFT_PRICE").ok()?.parse().ok())
+                            .ok_or_else(|| {
+                                anyhow!(
+                                    "Missing required argument: --nft-price (or set SOL_NFT_PRICE env var)"
+                                )
+                            })?,
+                        require(metadata_uri, "metadata_uri", "METADATA_URI")?,
+                    )
+                }
+            };
+
             let args = CommitForMintArgs {
                 chain: chain.clone(),
-                // Ethereum fields
                 eth_rpc,
                 seller_eth_key,
                 nft_contract: nft_contract
@@ -360,47 +434,21 @@ async fn main() -> Result<()> {
                     .map(|s| s.parse())
                     .transpose()
                     .context("Invalid buyer address")?,
-                // Solana fields
                 sol_rpc,
                 sol_ws,
                 seller_sol_keypair,
                 program_id,
                 name,
                 symbol,
-                // Common fields
                 secret_hash: utils::decode_hex_hash(&secret_hash, "secret hash")?,
                 token_id,
                 nft_price,
                 metadata_uri,
             };
 
-            match chain {
-                Chain::Ethereum => {
-                    if args.eth_rpc.is_none()
-                        || args.seller_eth_key.is_none()
-                        || args.nft_contract.is_none()
-                    {
-                        return Err(anyhow!(
-                            "For Ethereum: --eth-rpc, --seller-eth-key, and --nft-contract are required"
-                        ));
-                    }
-                }
-                Chain::Solana => {
-                    if args.sol_rpc.is_none()
-                        || args.sol_ws.is_none()
-                        || args.seller_sol_keypair.is_none()
-                        || args.program_id.is_none()
-                        || args.name.is_none()
-                        || args.symbol.is_none()
-                    {
-                        return Err(anyhow!(
-                            "For Solana: --sol-rpc, --sol-ws, --seller-sol-keypair, --program-id, --name, and --symbol are required"
-                        ));
-                    }
-                }
-            }
-
-            execute::commit_for_mint(args).await
+            let result = execute::commit_for_mint(args).await?;
+            result.print(output_format);
+            Ok(())
         }
 
         Commands::MintWithSecret {
@@ -422,50 +470,46 @@ async fn main() -> Result<()> {
 
             let (secret_bytes, _, _) = utils::resolve_secrets(secret, secret_file)?;
 
+            match &chain {
+                Chain::Ethereum => {
+                    require(buyer_eth_key.as_ref(), "buyer_eth_key", "BUYER_ETH_PRIVKEY")?;
+                    require(
+                        nft_contract.as_ref(),
+                        "nft_contract",
+                        "NFT_CONTRACT_ADDRESS",
+                    )?;
+                }
+                Chain::Solana => {
+                    require(
+                        buyer_sol_keypair.as_ref(),
+                        "buyer_sol_keypair",
+                        "BUYER_SOL_KEYPAIR",
+                    )?;
+                    require(program_id.as_ref(), "program_id", "SOL_PROGRAM_ID")?;
+                }
+            };
+
+            let token_id = require(token_id, "token_id", "TOKEN_ID")?;
+
             let args = MintWithSecretArgs {
                 chain: chain.clone(),
-                // Ethereum fields
                 eth_rpc,
                 buyer_eth_key,
                 nft_contract: nft_contract
                     .map(|s| s.parse())
                     .transpose()
                     .context("Invalid NFT contract address")?,
-                // Solana fields
                 sol_rpc,
                 sol_ws,
                 buyer_sol_keypair,
                 program_id,
-                // Common fields
                 secret: secret_bytes,
                 token_id,
             };
 
-            match chain {
-                Chain::Ethereum => {
-                    if args.eth_rpc.is_none()
-                        || args.buyer_eth_key.is_none()
-                        || args.nft_contract.is_none()
-                    {
-                        return Err(anyhow!(
-                            "For Ethereum: --eth-rpc, --buyer-eth-key, and --nft-contract are required"
-                        ));
-                    }
-                }
-                Chain::Solana => {
-                    if args.sol_rpc.is_none()
-                        || args.sol_ws.is_none()
-                        || args.buyer_sol_keypair.is_none()
-                        || args.program_id.is_none()
-                    {
-                        return Err(anyhow!(
-                            "For Solana: --sol-rpc, --sol-ws, --buyer-sol-keypair, and --program-id are required"
-                        ));
-                    }
-                }
-            }
-
-            execute::mint_with_secret(args).await
+            let result = execute::mint_with_secret(args).await?;
+            result.print(output_format);
+            Ok(())
         }
 
         Commands::ClaimBtc {
@@ -485,11 +529,10 @@ async fn main() -> Result<()> {
         } => {
             let network = utils::parse_btc_network(&btc_network)?;
 
-            // Resolve secret from either --secret or --secret-file
-            let (secret_bytes, file_secret_hash, file_lock_txid) =
+            let (secret, file_secret_hash, file_lock_txid) =
                 utils::resolve_secrets(secret, secret_file.clone())?;
 
-            let final_secret_hash = secret_hash
+            let secret_hash = secret_hash
                 .map(|h| utils::decode_hex_hash(&h, "secret hash"))
                 .transpose()?
                 .or(file_secret_hash)
@@ -497,7 +540,7 @@ async fn main() -> Result<()> {
                     anyhow!("Secret hash required (use --secret-hash or provide via --secret-file)")
                 })?;
 
-            let final_lock_txid = lock_txid
+            let lock_txid = lock_txid
                 .map(|s| s.parse())
                 .transpose()
                 .context("Invalid lock transaction ID")?
@@ -513,9 +556,9 @@ async fn main() -> Result<()> {
                 btc_network: network,
                 seller_btc_key,
                 buyer_btc_pubkey,
-                secret: secret_bytes,
-                secret_hash: final_secret_hash,
-                lock_txid: final_lock_txid,
+                secret,
+                secret_hash,
+                lock_txid,
                 lock_vout,
                 timeout,
                 destination: destination
@@ -523,7 +566,9 @@ async fn main() -> Result<()> {
                     .transpose()?,
             };
 
-            execute::claim_bitcoin(args)
+            let result = execute::claim_bitcoin(args)?;
+            result.print(output_format);
+            Ok(())
         }
 
         Commands::CancelCommit {
@@ -541,49 +586,49 @@ async fn main() -> Result<()> {
                 .parse::<Chain>()
                 .context("Invalid chain specification")?;
 
+            match &chain {
+                Chain::Ethereum => {
+                    require(
+                        caller_eth_key.as_ref(),
+                        "caller_eth_key",
+                        "SELLER_ETH_PRIVKEY",
+                    )?;
+                    require(
+                        nft_contract.as_ref(),
+                        "nft_contract",
+                        "NFT_CONTRACT_ADDRESS",
+                    )?;
+                }
+                Chain::Solana => {
+                    require(
+                        caller_sol_keypair.as_ref(),
+                        "caller_sol_keypair",
+                        "SELLER_SOL_KEYPAIR",
+                    )?;
+                    require(program_id.as_ref(), "program_id", "SOL_PROGRAM_ID")?;
+                }
+            };
+
+            let final_token_id = require(token_id, "token_id", "TOKEN_ID")?;
+
             let args = CancelCommitArgs {
                 chain: chain.clone(),
-                // Ethereum fields
                 eth_rpc,
                 caller_eth_key,
                 nft_contract: nft_contract
                     .map(|s| s.parse())
                     .transpose()
                     .context("Invalid NFT contract address")?,
-                // Solana fields
                 sol_rpc,
                 sol_ws,
                 caller_sol_keypair,
                 program_id,
-                // Common fields
-                token_id,
+                token_id: final_token_id,
             };
 
-            match chain {
-                Chain::Ethereum => {
-                    if args.eth_rpc.is_none()
-                        || args.caller_eth_key.is_none()
-                        || args.nft_contract.is_none()
-                    {
-                        return Err(anyhow!(
-                            "For Ethereum: --eth-rpc, --caller-eth-key, and --nft-contract are required"
-                        ));
-                    }
-                }
-                Chain::Solana => {
-                    if args.sol_rpc.is_none()
-                        || args.sol_ws.is_none()
-                        || args.caller_sol_keypair.is_none()
-                        || args.program_id.is_none()
-                    {
-                        return Err(anyhow!(
-                            "For Solana: --sol-rpc, --sol-ws, --caller-sol-keypair, and --program-id are required"
-                        ));
-                    }
-                }
-            }
-
-            execute::cancel_commitment(args).await
+            let result = execute::cancel_commitment(args).await?;
+            result.print(output_format);
+            Ok(())
         }
 
         Commands::RefundBtc {
@@ -615,7 +660,9 @@ async fn main() -> Result<()> {
                     .transpose()?,
             };
 
-            execute::refund_bitcoin(args)
+            let result = execute::refund_bitcoin(args)?;
+            result.print(output_format);
+            Ok(())
         }
     }
 }

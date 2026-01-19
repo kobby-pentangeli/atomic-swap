@@ -1,9 +1,13 @@
 //! Core data structures used throughout the swap
-//! execution pipeline, including chain identifiers and command arguments.
+//! execution pipeline, including chain identifiers, command arguments,
+//! and output formatting utilities.
 
+use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 
 use bitcoin::{Address as BtcAddress, Network, OutPoint, TxOut, Txid};
+use crossterm::execute;
+use crossterm::style::{Color, Print, ResetColor, SetForegroundColor};
 use ethers::core::types::{Address as EthAddress, U256};
 use serde::{Deserialize, Serialize};
 
@@ -239,4 +243,228 @@ pub struct RefundBtcArgs {
     pub timeout: u32,
     /// Optional destination address (defaults to buyer's wallet).
     pub destination: Option<BtcAddress>,
+}
+
+/// Output format of swap operations.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ResultFmt {
+    /// Human-readable output with colors (if terminal supports it).
+    #[default]
+    Human,
+    /// JSON output for scripting.
+    Json,
+}
+
+impl std::str::FromStr for ResultFmt {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "human" | "text" => Ok(Self::Human),
+            "json" => Ok(Self::Json),
+            _ => Err(format!("Invalid output format: {s}. Use 'human' or 'json'")),
+        }
+    }
+}
+
+fn supports_color() -> bool {
+    io::stdout().is_terminal() && std::env::var("NO_COLOR").is_err()
+}
+
+fn print_colored(color: Color, text: &str) {
+    let mut stdout = io::stdout();
+    if supports_color() {
+        execute!(stdout, SetForegroundColor(color), Print(text), ResetColor).ok();
+    } else {
+        let _ = write!(stdout, "{text}");
+    }
+    stdout.flush().ok();
+}
+
+fn print_status(color: Color, tag: &str, message: &str) {
+    print_colored(color, tag);
+    println!(" {message}");
+}
+
+fn print_field(label: &str, value: &str) {
+    print!("  ");
+    print_colored(Color::Cyan, label);
+    println!(" {value}");
+}
+
+/// Trait for types that can be printed in multiple formats.
+pub trait Printable: Serialize {
+    /// Prints in human-readable format.
+    fn print_human(&self);
+
+    /// Prints in the specified format.
+    fn print(&self, format: ResultFmt) {
+        match format {
+            ResultFmt::Json => {
+                println!("{}", serde_json::to_string_pretty(self).unwrap());
+            }
+            ResultFmt::Human => {
+                println!();
+                self.print_human();
+                println!();
+            }
+        }
+    }
+}
+
+/// Result of a lock-btc operation.
+#[derive(Debug, Serialize)]
+pub struct LockBtcResult {
+    pub txid: String,
+    pub htlc_address: String,
+    pub amount_sats: u64,
+    pub amount_btc: f64,
+    pub secret_hash: String,
+    pub secret_file: String,
+    pub timeout_blocks: u32,
+}
+
+impl Printable for LockBtcResult {
+    fn print_human(&self) {
+        print_status(Color::Green, "[OK]", "Bitcoin locked successfully");
+        println!();
+        print_field("Transaction:", &self.txid);
+        print_field("HTLC Address:", &self.htlc_address);
+        print_field(
+            "Amount:",
+            &format!("{} sats ({} BTC)", self.amount_sats, self.amount_btc),
+        );
+        print_field("Secret Hash:", &self.secret_hash);
+        print_field("Secret File:", &self.secret_file);
+        print_field("Timeout:", &format!("{} blocks", self.timeout_blocks));
+        println!();
+        print_status(
+            Color::Yellow,
+            "Next:",
+            "Share the secret hash with the seller to proceed.",
+        );
+    }
+}
+
+/// Result of a commit-for-mint operation.
+#[derive(Debug, Serialize)]
+pub struct CommitResult {
+    pub chain: String,
+    pub tx_id: String,
+    pub token_id: u64,
+    pub price: String,
+    pub metadata_uri: String,
+}
+
+impl Printable for CommitResult {
+    fn print_human(&self) {
+        print_status(
+            Color::Green,
+            "[OK]",
+            &format!("NFT commitment created on {}", self.chain),
+        );
+        println!();
+        print_field("Transaction:", &self.tx_id);
+        print_field("Token ID:", &self.token_id.to_string());
+        print_field("Price:", &self.price);
+        print_field("Metadata:", &self.metadata_uri);
+        println!();
+        print_status(
+            Color::Yellow,
+            "Next:",
+            "Buyer can now mint the NFT by revealing the secret.",
+        );
+    }
+}
+
+/// Result of a mint-with-secret operation.
+#[derive(Debug, Serialize)]
+pub struct MintResult {
+    pub chain: String,
+    pub tx_id: String,
+    pub token_id: u64,
+    pub secret_revealed: String,
+}
+
+impl Printable for MintResult {
+    fn print_human(&self) {
+        print_status(
+            Color::Green,
+            "[OK]",
+            &format!("NFT minted successfully on {}", self.chain),
+        );
+        println!();
+        print_field("Transaction:", &self.tx_id);
+        print_field("Token ID:", &self.token_id.to_string());
+        print_field("Secret:", &self.secret_revealed);
+        println!();
+        print_status(
+            Color::Yellow,
+            "Next:",
+            "Seller can now claim Bitcoin using the revealed secret.",
+        );
+    }
+}
+
+/// Result of a claim-btc operation.
+#[derive(Debug, Serialize)]
+pub struct ClaimBtcResult {
+    pub txid: String,
+    pub from_htlc: String,
+    pub destination: String,
+}
+
+impl Printable for ClaimBtcResult {
+    fn print_human(&self) {
+        print_status(Color::Green, "[OK]", "Bitcoin claimed successfully");
+        println!();
+        print_field("Transaction:", &self.txid);
+        print_field("From HTLC:", &self.from_htlc);
+        print_field("Destination:", &self.destination);
+        println!();
+        print_status(
+            Color::Green,
+            "Done:",
+            "Cross-chain atomic swap completed. All parties have received their assets.",
+        );
+    }
+}
+
+/// Result of a cancel-commit operation.
+#[derive(Debug, Serialize)]
+pub struct CancelResult {
+    pub chain: String,
+    pub tx_id: String,
+    pub token_id: u64,
+}
+
+impl Printable for CancelResult {
+    fn print_human(&self) {
+        print_status(
+            Color::Green,
+            "[OK]",
+            &format!("Commitment cancelled on {}", self.chain),
+        );
+        println!();
+        print_field("Transaction:", &self.tx_id);
+        print_field("Token ID:", &self.token_id.to_string());
+    }
+}
+
+/// Result of a refund-btc operation.
+#[derive(Debug, Serialize)]
+pub struct RefundBtcResult {
+    pub txid: String,
+    pub from_htlc: String,
+    pub destination: String,
+}
+
+impl Printable for RefundBtcResult {
+    fn print_human(&self) {
+        print_status(Color::Green, "[OK]", "Bitcoin refunded successfully");
+        println!();
+        print_field("Transaction:", &self.txid);
+        print_field("From HTLC:", &self.from_htlc);
+        print_field("Destination:", &self.destination);
+    }
 }
