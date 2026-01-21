@@ -10,7 +10,7 @@ edition = "2024"
 hex = { workspace = true }
 rand = { workspace = true }
 sha2 = { workspace = true }
-thiserror = { workspace = true }
 
 anyhow = "1.0"
 bitcoin = { version = "0.32", features = ["serde", "rand"] }
+thiserror = "2"
