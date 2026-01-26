@@ -14,10 +14,6 @@ jobs:
   check:
     name: cargo check
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        toolchain: [stable]
     steps:
       - uses: actions/checkout@v4
 
@@ -25,6 +21,16 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
+          cache: "npm"
+          cache-dependency-path: agent/eth/package-lock.json
+
+      - name: Cache Hardhat artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            agent/eth/artifacts
+            agent/eth/cache
+          key: hardhat-${{ hashFiles('agent/eth/contracts/**/*.sol') }}
 
       - name: Generate contract artifacts
         run: |
@@ -33,20 +39,34 @@ jobs:
           npx hardhat compile
 
       - name: Install Rust toolchain
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: ${{ matrix.toolchain }}
-          override: true
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: cargo-build-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+
       - name: cargo check
         run: cargo check --all-targets --all-features
 
   test:
     name: cargo test
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        toolchain: [stable, nightly]
     steps:
       - uses: actions/checkout@v4
 
@@ -54,6 +74,16 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
+          cache: "npm"
+          cache-dependency-path: agent/eth/package-lock.json
+
+      - name: Cache Hardhat artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            agent/eth/artifacts
+            agent/eth/cache
+          key: hardhat-${{ hashFiles('agent/eth/contracts/**/*.sol') }}
 
       - name: Generate contract artifacts
         run: |
@@ -62,12 +92,16 @@ jobs:
           npx hardhat compile
 
       - name: Install Rust toolchain
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
         with:
-          toolchain: ${{ matrix.toolchain }}
-          override: true
+          path: target
+          key: cargo-test-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+
       - name: cargo test
-        run: cargo test -- --nocapture
+        run: cargo test --all-features
 
   clippy:
     name: cargo clippy
@@ -79,6 +113,16 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
+          cache: "npm"
+          cache-dependency-path: agent/eth/package-lock.json
+
+      - name: Cache Hardhat artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            agent/eth/artifacts
+            agent/eth/cache
+          key: hardhat-${{ hashFiles('agent/eth/contracts/**/*.sol') }}
 
       - name: Generate contract artifacts
         run: |
@@ -86,28 +130,25 @@ jobs:
           npm ci
           npx hardhat compile
 
-      - name: Install nightly + clippy
-        uses: actions-rs/toolchain@v1
+      - name: Install Rust nightly with clippy
+        uses: dtolnay/rust-toolchain@nightly
         with:
-          profile: minimal
-          toolchain: nightly
           components: clippy
-          override: true
+
       - name: cargo clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --all-features --all-targets -- -D warnings
 
   fmt:
     name: rustfmt (check)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install nightly + rustfmt
-        uses: actions-rs/toolchain@v1
+
+      - name: Install Rust nightly with rustfmt
+        uses: dtolnay/rust-toolchain@nightly
         with:
-          profile: minimal
-          toolchain: nightly
           components: rustfmt
-          override: true
+
       - name: rustfmt check
         run: cargo fmt -- --check
 
@@ -121,6 +162,16 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
+          cache: "npm"
+          cache-dependency-path: agent/eth/package-lock.json
+
+      - name: Cache Hardhat artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            agent/eth/artifacts
+            agent/eth/cache
+          key: hardhat-${{ hashFiles('agent/eth/contracts/**/*.sol') }}
 
       - name: Generate contract artifacts
         run: |
@@ -128,20 +179,8 @@ jobs:
           npm ci
           npx hardhat compile
 
-      - name: Install Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          override: true
-      - name: cargo doc
-        run: cargo doc --no-deps
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
 
-  # deny:
-  #   name: cargo-deny
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - name: Install cargo-deny
-  #       run: cargo install --locked cargo-deny
-  #     - name: cargo deny check
-  #       run: cargo deny check advisories
+      - name: cargo doc
+        run: cargo doc --no-deps --all-features
