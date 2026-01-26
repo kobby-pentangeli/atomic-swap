@@ -1,14 +1,12 @@
 [workspace]
-members = ["agent/btc", "agent/sol/programs/*", "agent/sol/tests", "client"]
+members = ["agent/btc", "agent/sol/programs/*", "client"]
 
 resolver = "3"
 
 [workspace.dependencies]
 hex = "0.4"
-serde = { version = "1.0", features = ["derive"] }
 sha2 = "0.10"
 rand = "0.8"
-thiserror = "2"
 
 # https://github.com/briansmith/ring/discussions/2450
 # ring = "0.17"

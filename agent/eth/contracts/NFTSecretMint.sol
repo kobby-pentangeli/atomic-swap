@@ -46,11 +46,16 @@ contract NFTSecretMint is
     /// @dev Time window for commitments (24 hours)
     uint256 public constant COMMITMENT_TIMEOUT = 24 hours;
 
-    // TODO (kobby-pentangeli): bump this for production
-    /// @dev Minimum commitment time before reveal (prevents MEV)
-    uint256 public constant MIN_COMMITMENT_TIME = 5 seconds;
+    /// @dev Minimum commitment time before reveal (prevents front-running and MEV attacks)
+    uint256 public constant MIN_COMMITMENT_TIME = 1 minutes;
 
-    /// @dev Events
+    /// @dev Emitted when a seller creates a new commitment for NFT minting
+    /// @param tokenId The token ID reserved for minting
+    /// @param secretHash The SHA256 hash of the secret required for minting
+    /// @param seller The address that created the commitment
+    /// @param buyer The designated buyer address (zero address if open to anyone)
+    /// @param price The price in wei required to mint
+    /// @param metadataURI The metadata URI for the NFT
     event CommitmentCreated(
         uint256 indexed tokenId,
         bytes32 indexed secretHash,
@@ -60,6 +65,11 @@ contract NFTSecretMint is
         string metadataURI
     );
 
+    /// @dev Emitted when a secret is revealed during the minting process
+    /// @param tokenId The token ID being minted
+    /// @param secretHash The hash that was committed
+    /// @param secret The revealed secret (preimage)
+    /// @param revealer The address that revealed the secret
     event SecretRevealed(
         uint256 indexed tokenId,
         bytes32 indexed secretHash,
@@ -67,31 +77,55 @@ contract NFTSecretMint is
         address indexed revealer
     );
 
+    /// @dev Emitted when an NFT is successfully minted
+    /// @param tokenId The token ID that was minted
+    /// @param to The address that received the NFT
+    /// @param secret The secret used for minting
     event NFTMinted(
         uint256 indexed tokenId,
         address indexed to,
         bytes32 secret
     );
 
+    /// @dev Emitted when a commitment is cancelled
+    /// @param tokenId The token ID whose commitment was cancelled
+    /// @param secretHash The secret hash that was released
+    /// @param seller The seller who created the original commitment
     event CommitmentCancelled(
         uint256 indexed tokenId,
         bytes32 indexed secretHash,
         address indexed seller
     );
 
-    /// @dev Custom errors for gas efficiency
+    /// @dev Thrown when attempting to commit a token ID that already has an active commitment
     error TokenAlreadyCommitted();
+    /// @dev Thrown when referencing a commitment that does not exist or is inactive
     error InvalidCommitment();
+    /// @dev Thrown when attempting to mint after the commitment timeout has passed
     error CommitmentExpired();
+    /// @dev Thrown when attempting to mint before the minimum commitment time has elapsed
     error CommitmentTooEarly();
+    /// @dev Thrown when the provided secret does not hash to the expected value
     error InvalidSecret();
+    /// @dev Thrown when attempting to use a secret that has already been revealed
     error SecretAlreadyRevealed();
+    /// @dev Thrown when attempting to use a secret hash that is already associated with a token
     error HashAlreadyUsed();
+    /// @dev Thrown when a caller is not authorized to perform the requested action
     error UnauthorizedCaller();
+    /// @dev Thrown when the payment amount does not match the commitment price
     error InvalidPrice();
+    /// @dev Thrown when the ETH transfer to the seller fails
     error PaymentFailed();
+    /// @dev Thrown when querying a token that does not exist
     error TokenDoesNotExist();
 
+    /**
+     * @dev Initializes the NFTSecretMint contract
+     * @param name The name of the NFT collection
+     * @param symbol The symbol of the NFT collection
+     * @param initialOwner The address that will own the contract
+     */
     constructor(
         string memory name,
         string memory symbol,
@@ -255,22 +289,6 @@ contract NFTSecretMint is
      */
     function unpause() external onlyOwner {
         _unpause();
-    }
-
-    /**
-     * @dev Update commitment timeout (only owner)
-     * @param newTimeout New timeout in seconds
-     */
-    function updateCommitmentTimeout(
-        uint256 newTimeout
-    ) external view onlyOwner {
-        // Reasonable bounds: 1 hour to 7 days
-        require(
-            newTimeout >= 1 hours && newTimeout <= 7 days,
-            "Invalid timeout"
-        );
-        // TODO (kobby-pentangeli): Reconsider
-        // Because this would require making COMMITMENT_TIMEOUT non-constant
     }
 
     /**

@@ -1,24 +1,61 @@
-//! Hash Time Locked Contract (HTLC) for Bitcoin
+//! Hash Time Locked Contract (HTLC) implementation for Bitcoin.
+//!
+//! This crate provides a P2WSH (Pay-to-Witness-Script-Hash) HTLC implementation
+//! that enables atomic swaps between Bitcoin and other blockchains. The HTLC
+//! allows funds to be claimed in two ways:
+//!
+//! 1. **Reveal path**: The seller can claim funds by revealing the secret
+//!    (preimage of the hash)
+//! 2. **Timeout path**: The buyer can reclaim funds after a specified
+//!    block height (using OP_CHECKLOCKTIMEVERIFY)
+//!
+//! # Example
+//!
+//! ```rust,ignore
+//! use btc_htlc::{Contract, HtlcParams, generate_random_secret, hash_secret};
+//!
+//! let secret = generate_random_secret();
+//! let secret_hash = hash_secret(&secret);
+//!
+//! let params = HtlcParams {
+//!     secret_hash,
+//!     seller: seller_pubkey,
+//!     buyer: buyer_pubkey,
+//!     timeout: current_height + 144, // ~24 hours
+//!     network: Network::Bitcoin,
+//! };
+//!
+//! let contract = Contract::new(params);
+//! let address = contract.address();
+//! ```
 
 use bitcoin::opcodes::all::*;
 use bitcoin::script::Builder as ScriptBuilder;
 use bitcoin::{Address, Network, PublicKey, ScriptBuf, Witness};
 use sha2::{Digest, Sha256};
 
+/// Result type for HTLC operations.
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Errors that can occur during HTLC operations.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// The provided secret does not hash to the expected value.
     #[error("invalid secret provided")]
     InvalidSecret,
+    /// The timeout value is invalid.
     #[error("Invalid timeout value: {0}")]
     InvalidTimeout(u16),
+    /// The provided public key is invalid.
     #[error("Invalid public key")]
     InvalidPublicKey,
+    /// Failed to generate the HTLC script.
     #[error("Script generation failed")]
     ScriptGenerationFailed,
+    /// Failed to generate the P2WSH address.
     #[error("Address generation failed")]
     AddressGenerationFailed,
+    /// Failed to create the witness for spending.
     #[error("Witness creation failed: {0}")]
     WitnessCreation(String),
 }
@@ -32,7 +69,7 @@ pub struct Contract {
     pub seller: PublicKey,
     /// Public key of the buyer (who can reclaim after timeout)
     pub buyer: PublicKey,
-    /// Absolute timeout in blocks (using nLockTime)
+    /// Absolute timeout in blocks (using `nLockTime`)
     pub timeout: u32,
     /// The actual script
     pub script: ScriptBuf,
@@ -234,13 +271,14 @@ pub fn hex_to_secret(hex_str: &str) -> anyhow::Result<[u8; 32]> {
 #[cfg(test)]
 mod tests {
     use bitcoin::PrivateKey;
-    use bitcoin::secp256k1::Secp256k1;
+    use bitcoin::secp256k1::{Secp256k1, SecretKey};
 
     use super::*;
 
     fn create_test_keypair() -> (PrivateKey, PublicKey) {
         let secp = Secp256k1::new();
-        let private_key = PrivateKey::generate(Network::Regtest);
+        let secret_key = SecretKey::new(&mut rand::thread_rng());
+        let private_key = PrivateKey::new(secret_key, Network::Regtest);
         let public_key = private_key.public_key(&secp);
         (private_key, public_key)
     }
@@ -250,7 +288,6 @@ mod tests {
         let original_secret = generate_random_secret();
         let hex_secret = hex::encode(original_secret);
         let parsed_secret = hex_to_secret(&hex_secret).unwrap();
-
         assert_eq!(original_secret, parsed_secret);
     }
 
@@ -306,7 +343,6 @@ mod tests {
         };
 
         let contract = Contract::new(params);
-
         assert!(contract.verify_secret(&secret));
 
         let wrong_secret = generate_random_secret();
@@ -335,5 +371,58 @@ mod tests {
 
         assert!(reveal_size > timeout_size);
         assert!(reveal_size > 100);
+    }
+
+    #[test]
+    fn create_witness_reveal_path() {
+        let (_, seller_pk) = create_test_keypair();
+        let (_, buyer_pk) = create_test_keypair();
+        let secret = generate_random_secret();
+        let secret_hash = hash_secret(&secret);
+
+        let contract = Contract::new(HtlcParams {
+            secret_hash,
+            seller: seller_pk,
+            buyer: buyer_pk,
+            timeout: 800144,
+            network: Network::Regtest,
+        });
+
+        let dummy_sig = vec![0x30, 0x44, 0x02, 0x20]; // Partial DER prefix
+
+        let witness = contract
+            .create_witness(HtlcCondition::Reveal { secret }, dummy_sig.clone())
+            .unwrap();
+
+        // Witness should have 4 elements: signature, secret, TRUE (0x01), script
+        assert_eq!(witness.len(), 4);
+        assert_eq!(witness.nth(1).unwrap(), &secret[..]);
+        assert_eq!(witness.nth(2).unwrap(), &[0x01]);
+    }
+
+    #[test]
+    fn create_witness_timeout_path() {
+        let (_, seller_pk) = create_test_keypair();
+        let (_, buyer_pk) = create_test_keypair();
+        let secret = generate_random_secret();
+        let secret_hash = hash_secret(&secret);
+
+        let contract = Contract::new(HtlcParams {
+            secret_hash,
+            seller: seller_pk,
+            buyer: buyer_pk,
+            timeout: 800144,
+            network: Network::Regtest,
+        });
+
+        let dummy_sig = vec![0x30, 0x44, 0x02, 0x20];
+
+        let witness = contract
+            .create_witness(HtlcCondition::Timeout, dummy_sig)
+            .unwrap();
+
+        // Witness should have 3 elements: signature, FALSE (empty), script
+        assert_eq!(witness.len(), 3);
+        assert!(witness.nth(1).unwrap().is_empty());
     }
 }

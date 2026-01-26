@@ -21,6 +21,3 @@
 
 # Deploy output
 /ignition/deployments/*
-contract_address.txt
-hardhat.log
-hardhat.pid

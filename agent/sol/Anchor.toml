@@ -5,8 +5,11 @@ package_manager = "yarn"
 resolution = true
 skip-lint = false
 
-[programs.localnet]
+[programs.devnet]
 sol_htlc = "Htp3Lm1W6dRgDjVtS89unkgUHJwijXkkseyaCHHdsZKG"
+
+[programs.localnet]
+sol_htlc = "2geXhC16Hc9Q9QBP4DQZx2xxUumXHLS5ugYqXwSB4jXo"
 
 [registry]
 url = "https://api.apr.dev"
@@ -16,15 +19,15 @@ cluster = "localnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]
-test = "cargo test"
+test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"
 
 [test]
-startup_wait = 5000
+startup_wait = 10000
 shutdown_wait = 2000
 upgradeable = false
 
 [test.validator]
-bind_address = "0.0.0.0"
+bind_address = "127.0.0.1"
 url = "https://api.mainnet-beta.solana.com"
 ledger = ".anchor/test-ledger"
 rpc_port = 8899

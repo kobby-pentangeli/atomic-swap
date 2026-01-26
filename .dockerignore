@@ -24,6 +24,9 @@ Thumbs.db
 .solana-ledger
 .anchor
 
+# Runtime-generated files
+.swap
+
 # Docker files
 Dockerfile*
 docker-compose*.yml
