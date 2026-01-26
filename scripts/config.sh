@@ -52,6 +52,10 @@ export SETUP_DIR
 export BITCOIN_DATA_DIR
 export BITCOIN_CONF="$BITCOIN_DATA_DIR/bitcoin.conf"
 export SWAP_DIR="${SWAP_DIR:-$SETUP_DIR/.swap}"
+
+# Ensure .swap directory exists for logging and other operations
+mkdir -p "$SWAP_DIR"
+
 export LOG_FILE="${LOG_FILE:-$SWAP_DIR/setup.log}"
 
 export BTC_RPC_USER="${BTC_RPC_USER:-user}"

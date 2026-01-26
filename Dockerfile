@@ -45,7 +45,7 @@ RUN if [ "$TARGETARCH" = "amd64" ]; then \
     cargo install --git https://github.com/solana-foundation/anchor avm --force && \
     avm install latest && avm use latest; \
     else \
-    cargo install --git https://github.com/solana-foundation/anchor anchor-cli --tag v0.31.1 --force; \
+    cargo install --git https://github.com/solana-foundation/anchor anchor-cli --tag v0.32.1 --force; \
     fi
 RUN anchor --version || echo "Anchor installation verification failed"
 
@@ -85,26 +85,23 @@ COPY Cargo.toml .
 COPY agent/btc/Cargo.toml agent/btc/
 COPY agent/sol/Cargo.toml agent/sol/
 COPY agent/sol/programs/sol-htlc/Cargo.toml agent/sol/programs/sol-htlc/
-COPY agent/sol/tests/Cargo.toml agent/sol/tests/
 COPY client/Cargo.toml client/
 
 # Create minimal dummy source files for dependency caching
 RUN mkdir -p \
     agent/btc/src \
     agent/sol/programs/sol-htlc/src \
-    agent/sol/tests/src \
     client/src/bin \
     && echo 'fn main() {}' > client/src/main.rs \
     && echo 'fn main() {}' > client/src/bin/derive_privkey.rs \
     && echo '' > agent/btc/src/lib.rs \
-    && echo '' > agent/sol/programs/sol-htlc/src/lib.rs \
-    && echo '' > agent/sol/tests/src/lib.rs
+    && echo '' > agent/sol/programs/sol-htlc/src/lib.rs
 
 # Build dependencies only (caching layer)
 RUN cargo build --release --workspace
 
 # Remove dummy files to avoid conflicts
-RUN rm -rf client/src agent/btc/src agent/sol/programs/sol-htlc/src agent/sol/tests/src
+RUN rm -rf client/src agent/btc/src agent/sol/programs/sol-htlc/src
 
 # Copy starter script for Solana test validator
 COPY scripts/start-solana.sh .

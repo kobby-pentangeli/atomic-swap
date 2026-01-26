@@ -65,6 +65,16 @@ commit_for_mint() {
                 --nft-price "$ETH_NFT_PRICE" \
                 --buyer-address "$BUYER_ETH_ADDRESS" \
                 --metadata-uri "$METADATA_URI"
+
+            # Advance time and mine block for MIN_COMMITMENT_TIME (1 minute)
+            echo "Advancing Ethereum time by 61 seconds to meet MIN_COMMITMENT_TIME requirement..."
+            curl -s -X POST -H 'Content-Type: application/json' \
+                --data '{"jsonrpc":"2.0","method":"evm_increaseTime","params":[61],"id":1}' \
+                "$ETH_RPC_URL" > /dev/null
+            curl -s -X POST -H 'Content-Type: application/json' \
+                --data '{"jsonrpc":"2.0","method":"evm_mine","params":[],"id":1}' \
+                "$ETH_RPC_URL" > /dev/null
+            echo "Time advanced. Ready to mint."
             ;;
         "sol")
             RUST_LOG=info ./target/release/client commit-for-mint \
