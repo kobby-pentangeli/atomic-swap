@@ -1,262 +1,263 @@
 # Atomic Swap
 
-A cross-chain atomic swap system where Bitcoin payment unlocks NFT minting on Ethereum or Solana through shared secrets using Hash Time Locked Contracts (HTLC).
+A cross-chain atomic swap system enabling trustless exchange of Bitcoin for NFTs on Ethereum or Solana using Hash Time Locked Contracts (HTLC).
 
-**Warning:** This is experimental software. Please do not use with real funds without thorough testing and security audit.
+**Warning:** This is experimental software. Do not use with real funds without thorough testing and security audit.
 
-## Overview
-
-This system enables trustless atomic swaps between Bitcoin and Ethereum/Solana NFTs:
+## How It Works
 
 1. **Buyer locks Bitcoin** in an HTLC using a secret hash
-2. **Seller commits NFT** on Ethereum or Solana using the same secret hash
-3. **Buyer reveals secret** to mint the NFT on Ethereum or Solana
-4. **Seller claims Bitcoin** using the revealed secret from Ethereum or Solana
+2. **Seller commits NFT** on Ethereum or Solana using the same hash
+3. **Buyer reveals secret** to mint the NFT
+4. **Seller claims Bitcoin** using the revealed secret
 
-## End-to-end Demo
+## Local Demo
 
-You can run the demo either locally or in a dockerized environment:
+Test the full swap flow on your local machine using either Docker (recommended) or native setup.
 
-- **Docker Setup** (Recommended): No local dependencies needed; everything runs in containers
-- **Local Setup**: Full control and debugging capabilities
+### Option A: Docker (Recommended)
 
-### Docker Setup (Recommended)
-
-Prerequisites: **Docker** 20.10+ and **Docker Compose** 2.0+
-Installing Docker Desktop automatically gives Docker Compose as well. [Install here](https://www.docker.com/).
+**Requirements:** Docker 20.10+ and Docker Compose 2.0+
 
 ```bash
-# Clone repo
+# Clone and start all services
 git clone https://github.com/kobby-pentangeli/atomic-swap.git
 cd atomic-swap
-
-# Start all services (Bitcoin, Ethereum, Solana, and app)
 docker-compose up --build
-```
 
-This will:
-
-- Build all blockchain services in containers
-- Start Bitcoin regtest, Ethereum (Hardhat), and Solana test validator
-- Build the Rust client and deploy all contracts
-- Generate funded test accounts and demo configuration
-- Display ready-to-use commands when setup completes
-
-### Run Dockerized Demo
-
-After `docker-compose up` shows "Setup complete! Container ready for demo.", open a new terminal and run:
-
-```bash
-# Enter the demo container
+# In a new terminal, enter the container
 docker exec -it xchain-app bash
-
-# Load the generated configuration
 source .swap/atomic_swap.sh
 ```
 
-> **Tip:** The setup container stays running after initialization, so you can access it anytime with `docker exec -it xchain-app bash` in a separate terminal
+### Option B: Native Setup
 
-#### Lock BTC
+**Requirements:** Rust 1.75+, Node.js 18+, Bitcoin Core
 
 ```bash
-# 1. (BUYER): Lock Bitcoin in HTLC
+# Clone and run setup
+git clone https://github.com/kobby-pentangeli/atomic-swap.git
+cd atomic-swap
+./setup.sh
+
+# Load configuration
+source .swap/atomic_swap.sh
+```
+
+> **Note:** For native setup, you may need to mine additional blocks:
+>
+> ```bash
+> bitcoin-cli -regtest -datadir=.bitcoin generatetoaddress 101 <BUYER_BTC_ADDRESS>
+> ```
+
+### Running the Swap
+
+Once setup is complete (Docker or native), run these commands:
+
+```bash
+# 1. Buyer locks Bitcoin
 lock_btc
-```
 
-The above command will execute the first step of the swap. Upon success, the **SECRET**, **SECRET_HASH**, and **LOCK_TXID** are automatically saved to `.swap/secrets/swap.secret`. You can also view them in stdout.
+# 2. Seller commits NFT (choose chain)
+commit_for_mint --chain eth <SECRET_HASH>  # Ethereum
+# OR
+commit_for_mint --chain sol <SECRET_HASH>  # Solana
 
-#### Commit the NFT
+# 3. Buyer mints NFT by revealing secret
+mint_with_secret --chain eth --secret-file .swap/secrets/swap.secret
+# OR
+mint_with_secret --chain sol --secret-file .swap/secrets/swap.secret
 
-```bash
-# 2. (SELLER): Commit to mint NFT with secret hash
-commit_for_mint --chain <eth|sol> <SECRET_HASH>
-
-# Example commands:
-#   commit_for_mint --chain eth <SECRET_HASH>
-#   commit_for_mint --chain sol <SECRET_HASH>
-```
-
-#### Mint with Secret
-
-```bash
-# 3. (BUYER): Mint NFT by revealing the secret
-mint_with_secret --chain <eth|sol> <SECRET>
-
-# Or use the secret file directly:
-mint_with_secret --chain <eth|sol> --secret-file .swap/secrets/swap.secret
-
-# Example commands:
-#   mint_with_secret --chain eth --secret-file .swap/secrets/swap.secret
-#   mint_with_secret --chain sol <SECRET>
-```
-
-#### Claim Bitcoin
-
-```bash
-# 4. (SELLER): Claim Bitcoin using the revealed secret
-claim_btc <SECRET> <SECRET_HASH> <LOCK_TXID>
-
-# Or use the secret file directly:
+# 4. Seller claims Bitcoin
 claim_btc --secret-file .swap/secrets/swap.secret
 ```
 
-#### Cancel Commitment (Recovery)
+### Recovery Commands
 
-If the swap doesn't complete, the seller can cancel an expired commitment:
-
-```bash
-# Cancel an expired commitment (seller only)
-cancel_commit --chain <eth|sol>
-
-# With specific token ID:
-cancel_commit --chain eth --token-id 5
-```
-
-#### Refund Bitcoin
-
-If the timeout specified in the lock transaction expires, the buyer can reclaim the locked HTLC funds:
+If the swap fails or times out:
 
 ```bash
-# Reclaim BTC after timeout expiry (buyer only)
+# Seller cancels commitment
+cancel_commit --chain eth --token-id 1
+
+# Buyer reclaims Bitcoin after timeout
 refund_btc --secret-file .swap/secrets/swap.secret
 ```
 
-**NOTE**: The above commands `lock_btc`, `commit_for_mint`, `mint_with_secret`, `claim_btc`, `cancel_commit`, and `refund_btc` work the same in the local setup case as in the Dockerized case.
+## Devnet Deployment
 
-### Local Setup & Demo
+Deploy to Bitcoin testnet/signet, Ethereum Sepolia, or Solana Devnet.
 
-Prerequisites:
+### Prerequisites
 
-- **Rust** 1.75+ with Cargo
-- **Node.js** 18+ with npm/yarn
-- **Bitcoin Core** (for regtest mode)
-- **Hardhat** development environment
+1. **Bitcoin**: Testnet/Signet RPC access ([public nodes](https://mempool.space/testnet) or run your own)
+2. **Ethereum**: Sepolia RPC ([Infura](https://infura.io), [Alchemy](https://alchemy.com), or public endpoint)
+3. **Solana**: Devnet RPC access (public endpoint: `https://api.devnet.solana.com`)
+4. **Wallets**: Funded accounts on each network
 
-```bash
-# Install Rust
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-# Install Node.js (via nvm recommended)
-curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.0/install.sh | bash
-nvm install --lts
-nvm use --lts
-
-# Install Bitcoin Core (Ubuntu/Debian)
-sudo apt-get update
-sudo apt-get install bitcoind
-
-# Or via Homebrew (macOS)
-brew install bitcoin
-
-# Clone repo
-git clone https://github.com/kobby-pentangeli/atomic-swap.git
-cd atomic-swap
-
-# Set up the demo parameters and runners
-./setup.sh
-```
-
-The setup script automatically:
-
-- Installs missing prerequisites (Bitcoin Core, dependencies)
-- Builds the Rust `client`
-- Configures and starts Bitcoin regtest node
-- Deploys Ethereum NFT contract on local Hardhat network
-- Generates funded test accounts for both networks
-- Creates ready-to-use demo configuration in `.swap/`
-
-**NOTE**: The setup script prefunds the buyer's BTC wallet ("testwallet"), but to ensure sufficient funds and avoid potential errors, you may need to mine additional blocks:
+### Configuration
 
 ```bash
-# In project root directory
-bitcoin-cli -regtest -datadir=.bitcoin generatetoaddress 101 <BUYER_BTC_ADDRESS>
+# Copy template and fill in values
+cp .env.template .env
 ```
 
-Copy-paste the `<BUYER_BTC_ADDRESS>` from the `.swap/atomic_swap.sh` demo config file. Once you have enough BTC, proceed with the swap:
+**Edit `.env` with your testnet/devnet details:**
 
 ```bash
-# 0. Load the config
-source .swap/atomic_swap.sh
+# Bitcoin Testnet
+BTC_RPC_URL=https://your-testnet-node:18332
+BTC_NETWORK=testnet
+BUYER_BTC_PRIVKEY=<your_hex_key>
+SELLER_BTC_PUBKEY=<seller_hex_pubkey>
+
+# Ethereum Sepolia
+ETH_RPC_URL=https://sepolia.infura.io/v3/YOUR_KEY
+NFT_CONTRACT_ADDRESS=<deployed_contract_address>
+BUYER_ETH_PRIVKEY=0x...
+SELLER_ETH_PRIVKEY=0x...
+
+# Solana Devnet
+SOL_RPC_URL=https://api.devnet.solana.com
+SOL_PROGRAM_ID=<deployed_program_id>
+BUYER_SOL_KEYPAIR=./path/to/buyer-keypair.json
+SELLER_SOL_KEYPAIR=./path/to/seller-keypair.json
 ```
 
-The above command will load the demo config. You can then proceed to execute the `lock_btc`, `commit_for_mint`, etc. commands as specified in the Dockerized demo section.
-To stop all services, run the `stop_services` command.
+For complete list of variables, see [.env.template](.env.template).
 
-## Directory Structure
+### Deploy Contracts
 
-After setup, the `.swap/` directory contains all runtime-generated files:
-
-```sh
-.swap/
-├── atomic_swap.sh        # Demo configuration (source this file)
-├── contract_address.txt  # Ethereum NFT contract address
-├── program_id.txt        # Solana program ID
-├── keypairs/
-│   ├── buyer.json        # Solana buyer keypair
-│   └── seller.json       # Solana seller keypair
-└── secrets/
-    └── swap.secret       # Secret, hash, and txid from lock_btc
-```
-
-## Customizing Demo Parameters
-
-You can modify the generated `.swap/atomic_swap.sh` to customize the demo run:
+#### Ethereum Sepolia
 
 ```bash
-# Edit amounts, token IDs, metadata, etc.
-export BTC_AMOUNT="2000000"      # 0.02 BTC
-export ETH_NFT_PRICE="2000000000000000000"  # 2 ETH
-export TOKEN_ID="42"
-export METADATA_URI="https://your-nft-metadata.json"
+cd agent/eth
+
+# Set environment variables
+export SEPOLIA_RPC_URL=https://sepolia.infura.io/v3/YOUR_KEY
+export SEPOLIA_PRIVATE_KEY=0x...
+
+# Deploy
+npm run deploy:sepolia
+
+# Copy deployed address to .env
+# NFT_CONTRACT_ADDRESS=<address_from_output>
 ```
 
-## Managing Docker Services
-
-### Basics
+#### Solana Devnet
 
 ```bash
-# Start all services
+cd agent/sol
+
+# Configure Solana CLI for devnet
+solana config set --url https://api.devnet.solana.com
+
+# Airdrop SOL for deployment (if needed)
+solana airdrop 2
+
+# Deploy
+anchor build
+anchor deploy --provider.cluster devnet
+
+# Copy program ID to .env
+# SOL_PROGRAM_ID=<program_id_from_output>
+```
+
+### Running on Devnet
+
+With `.env` configured, the CLI requires minimal arguments:
+
+```bash
+# Lock Bitcoin on testnet
+cargo run --release -- lock-btc --amount 100000
+
+# Commit NFT on Sepolia
+cargo run --release -- commit-for-mint \
+  --chain eth \
+  --secret-hash <hash_from_lock_output> \
+  --price 1000000000000000000 \
+  --token-id 1 \
+  --metadata-uri https://example.com/nft/1.json
+
+# Mint NFT on Sepolia
+cargo run --release -- mint-with-secret \
+  --chain eth \
+  --secret-file .swap/secrets/swap.secret
+
+# Claim Bitcoin on testnet
+cargo run --release -- claim-btc --secret-file .swap/secrets/swap.secret
+```
+
+> **Tip:** Use `--no-env` flag to bypass `.env` loading and use system environment variables instead.
+
+## Project Structure
+
+```bash
+atomic-swap/
+├── agent/
+│   ├── btc/              # Bitcoin HTLC library
+│   ├── eth/              # Ethereum NFTSecretMint contract
+│   └── sol/              # Solana sol-htlc program
+├── client/               # Rust CLI orchestration tool
+├── scripts/              # Setup and deployment scripts
+└── .swap/                # Runtime-generated files (gitignored)
+    ├── atomic_swap.sh    # Shell wrapper functions
+    ├── keypairs/         # Solana keypairs
+    └── secrets/          # Swap secrets
+```
+
+## Advanced Usage
+
+### Customizing Parameters
+
+Modify `.swap/atomic_swap.sh` or `.env` to customize amounts, token IDs, and metadata:
+
+```bash
+BTC_AMOUNT=2000000                        # 0.02 BTC
+ETH_NFT_PRICE=2000000000000000000         # 2 ETH
+SOL_NFT_PRICE=2000000000                  # 2 SOL
+TOKEN_ID=42
+METADATA_URI=https://your-nft-metadata.json
+```
+
+### Docker Management
+
+```bash
+# Start services
 docker-compose up --build
 
-# Stop all services
+# Stop services
 docker-compose down
 
 # View logs
 docker-compose logs -f
 
-# Check service status
-docker-compose ps
-
-# Access individual services
-docker exec -it xchain-btc bash      # Bitcoin node
-docker exec -it xchain-eth bash      # Ethereum node
-docker exec -it xchain-sol bash      # Solana validator
-docker exec -it xchain-app bash      # Demo environment
+# Access containers
+docker exec -it xchain-app bash  # Demo environment
+docker exec -it xchain-btc bash  # Bitcoin node
+docker exec -it xchain-eth bash  # Ethereum node
+docker exec -it xchain-sol bash  # Solana validator
 ```
 
-### Service Health Checks
+### Health Checks
 
 ```bash
-# Bitcoin regtest status
-docker exec -it xchain-btc bitcoin-cli -regtest -rpcport=18443 -rpcuser=user -rpcpassword=password getblockchaininfo
+# Bitcoin regtest
+docker exec -it xchain-btc bitcoin-cli -regtest getblockchaininfo
 
-# Ethereum network status
-docker exec -it xchain-eth curl -X POST -H 'Content-Type: application/json' --data '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' http://localhost:8545
+# Ethereum
+docker exec -it xchain-eth curl -X POST -H 'Content-Type: application/json' \
+  --data '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' \
+  http://localhost:8545
 
-# Solana cluster status
+# Solana
 docker exec -it xchain-sol solana cluster-version --url http://localhost:8899
 ```
 
 ## Contributing
 
-Thank you for considering contributing to this project! All contributions large and small are actively accepted.
-
-- To get started, please read the [contribution guidelines](https://github.com/kobby-pentangeli/atomic-swap/blob/main/CONTRIBUTING.md).
-
-- Browse [Good First Issues](https://github.com/kobby-pentangeli/atomic-swap/labels/good%20first%20issue).
+Contributions are welcome! Please read the [contribution guidelines](https://github.com/kobby-pentangeli/atomic-swap/blob/main/CONTRIBUTING.md) and browse [Good First Issues](https://github.com/kobby-pentangeli/atomic-swap/labels/good%20first%20issue).
 
 ## License
 
-Licensed under either of [Apache License, Version 2.0](./LICENSE-APACHE) or [MIT license](./LICENSE-MIT) at your option.
-
-Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in this codebase by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.
+Licensed under either [Apache License 2.0](./LICENSE-APACHE) or [MIT license](./LICENSE-MIT) at your option.
