@@ -1,6 +1,6 @@
 [package]
 name = "sol-htlc"
-version = "0.1.0"
+version = "0.2.0"
 description = "Hash Time Locked Contract (HTLC) for Solana"
 edition = "2021"
 
