@@ -23,9 +23,8 @@ use utils::{DEFAULT_SECRETS_DIR, DEFAULT_SECRETS_FILE};
 
 use crate::btc::BtcClient;
 use crate::types::{
-    CancelCommitArgs, CancelResult, Chain, ClaimBtcArgs, ClaimBtcResult, CommitForMintArgs,
-    CommitResult, LockBtcArgs, LockBtcResult, MintResult, MintWithSecretArgs, RefundBtcArgs,
-    RefundBtcResult,
+    CancelCommitArgs, CancelResult, ClaimBtcArgs, ClaimBtcResult, CommitForMintArgs, CommitResult,
+    LockBtcArgs, LockBtcResult, MintResult, MintWithSecretArgs, RefundBtcArgs, RefundBtcResult,
 };
 use crate::{eth, sol, utils};
 
@@ -119,9 +118,11 @@ pub fn lock_bitcoin(args: LockBtcArgs) -> Result<LockBtcResult> {
 /// commits to minting an NFT using the same secret hash. The NFT can only be
 /// minted by revealing the secret.
 pub async fn commit_for_mint(args: CommitForMintArgs) -> Result<CommitResult> {
-    match args.chain {
-        Chain::Ethereum => eth::commit_for_mint(args).await,
-        Chain::Solana => tokio::task::spawn_blocking(move || sol::commit_for_mint(args)).await?,
+    match args {
+        CommitForMintArgs::Ethereum(a) => eth::commit_for_mint(a).await,
+        CommitForMintArgs::Solana(a) => {
+            tokio::task::spawn_blocking(move || sol::commit_for_mint(a)).await?
+        }
     }
 }
 
@@ -131,9 +132,11 @@ pub async fn commit_for_mint(args: CommitForMintArgs) -> Result<CommitResult> {
 /// the NFT. Once the secret is revealed on-chain, the seller can use it to
 /// claim the locked Bitcoin.
 pub async fn mint_with_secret(args: MintWithSecretArgs) -> Result<MintResult> {
-    match args.chain {
-        Chain::Ethereum => eth::mint_with_secret(args).await,
-        Chain::Solana => tokio::task::spawn_blocking(move || sol::mint_with_secret(args)).await?,
+    match args {
+        MintWithSecretArgs::Ethereum(a) => eth::mint_with_secret(a).await,
+        MintWithSecretArgs::Solana(a) => {
+            tokio::task::spawn_blocking(move || sol::mint_with_secret(a)).await?
+        }
     }
 }
 
@@ -232,9 +235,11 @@ pub fn claim_bitcoin(args: ClaimBtcArgs) -> Result<ClaimBtcResult> {
 /// On Ethereum, only the seller can cancel before timeout; after timeout, anyone
 /// can cancel. On Solana, only the seller can cancel.
 pub async fn cancel_commitment(args: CancelCommitArgs) -> Result<CancelResult> {
-    match args.chain {
-        Chain::Ethereum => eth::cancel_commitment(args).await,
-        Chain::Solana => tokio::task::spawn_blocking(move || sol::cancel_commitment(args)).await?,
+    match args {
+        CancelCommitArgs::Ethereum(a) => eth::cancel_commitment(a).await,
+        CancelCommitArgs::Solana(a) => {
+            tokio::task::spawn_blocking(move || sol::cancel_commitment(a)).await?
+        }
     }
 }
 

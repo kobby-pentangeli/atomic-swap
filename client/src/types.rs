@@ -5,11 +5,12 @@
 use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 
+use alloy::primitives::Address as EthAddress;
 use bitcoin::{Address as BtcAddress, Network, OutPoint, TxOut, Txid};
 use crossterm::execute;
 use crossterm::style::{Color, Print, ResetColor, SetForegroundColor};
-use ethers::core::types::{Address as EthAddress, U256};
 use serde::{Deserialize, Serialize};
+use solana_sdk::pubkey::Pubkey;
 
 /// Target blockchain for NFT operations.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -52,25 +53,6 @@ pub struct UtxoInfo {
     pub tx_out: TxOut,
 }
 
-/// Ethereum NFT commitment information returned from the contract.
-#[derive(Deserialize, Serialize, Clone, Debug)]
-pub struct CommitmentInfo {
-    /// SHA-256 hash of the secret required to mint.
-    pub secret_hash: [u8; 32],
-    /// Address of the seller who created the commitment.
-    pub seller: EthAddress,
-    /// Address of the authorized buyer (zero address if unrestricted).
-    pub buyer: EthAddress,
-    /// Price in wei required to mint the NFT.
-    pub price: U256,
-    /// Unix timestamp when the commitment was created.
-    pub commit_time: U256,
-    /// Whether this commitment is still active (not yet minted or cancelled).
-    pub is_active: bool,
-    /// IPFS or HTTP URI for the NFT metadata.
-    pub token_uri: String,
-}
-
 /// Arguments for the lock-btc command.
 ///
 /// Used by the buyer to lock Bitcoin funds in an HTLC.
@@ -97,64 +79,98 @@ pub struct LockBtcArgs {
     pub secret_output_file: Option<PathBuf>,
 }
 
-/// Arguments for the commit-for-mint command.
-///
-/// Used by the seller to commit an NFT for minting on Ethereum or Solana.
+/// Arguments for the commit-for-mint command, resolved to exactly one chain.
 #[derive(Debug, Clone)]
-pub struct CommitForMintArgs {
-    /// Target blockchain for the NFT.
-    pub chain: Chain,
+pub enum CommitForMintArgs {
+    /// Commit on Ethereum.
+    Ethereum(EthCommitArgs),
+    /// Commit on Solana.
+    Solana(SolCommitArgs),
+}
+
+/// Ethereum-specific arguments for committing an NFT for minting.
+#[derive(Debug, Clone)]
+pub struct EthCommitArgs {
     /// Ethereum RPC endpoint URL.
-    pub eth_rpc: Option<String>,
+    pub eth_rpc: String,
     /// Seller's Ethereum private key.
-    pub seller_eth_key: Option<String>,
+    pub seller_eth_key: String,
     /// Ethereum NFT contract address.
-    pub nft_contract: Option<EthAddress>,
-    /// Authorized buyer address (None for unrestricted).
-    pub buyer_address: Option<EthAddress>,
-    /// Solana RPC endpoint URL.
-    pub sol_rpc: Option<String>,
-    /// Solana WebSocket endpoint URL.
-    pub sol_ws: Option<String>,
-    /// Path to seller's Solana keypair file.
-    pub seller_sol_keypair: Option<String>,
-    /// Solana HTLC program ID.
-    pub program_id: Option<String>,
-    /// NFT name (Solana only).
-    pub name: Option<String>,
-    /// NFT symbol (Solana only).
-    pub symbol: Option<String>,
+    pub nft_contract: EthAddress,
+    /// Authorized buyer address (`None` for an open mint).
+    pub buyer: Option<EthAddress>,
     /// SHA-256 hash of the secret.
     pub secret_hash: [u8; 32],
     /// Token ID for the NFT.
     pub token_id: u64,
-    /// NFT price (wei for Ethereum, lamports for Solana).
-    pub nft_price: u64,
+    /// NFT price in wei.
+    pub price: u64,
     /// NFT metadata URI.
     pub metadata_uri: String,
 }
 
-/// Arguments for the mint-with-secret command.
-///
-/// Used by the buyer to reveal the secret and mint the NFT.
+/// Solana-specific arguments for committing an NFT for minting.
 #[derive(Debug, Clone)]
-pub struct MintWithSecretArgs {
-    /// Target blockchain for the NFT.
-    pub chain: Chain,
-    /// Ethereum RPC endpoint URL.
-    pub eth_rpc: Option<String>,
-    /// Buyer's Ethereum private key.
-    pub buyer_eth_key: Option<String>,
-    /// Ethereum NFT contract address.
-    pub nft_contract: Option<EthAddress>,
+pub struct SolCommitArgs {
     /// Solana RPC endpoint URL.
-    pub sol_rpc: Option<String>,
+    pub sol_rpc: String,
     /// Solana WebSocket endpoint URL.
-    pub sol_ws: Option<String>,
-    /// Path to buyer's Solana keypair file.
-    pub buyer_sol_keypair: Option<String>,
+    pub sol_ws: String,
+    /// Path to seller's Solana keypair file.
+    pub seller_sol_keypair: String,
     /// Solana HTLC program ID.
-    pub program_id: Option<String>,
+    pub program_id: String,
+    /// NFT name.
+    pub name: String,
+    /// NFT symbol.
+    pub symbol: String,
+    /// Authorized buyer pubkey (`None` for an open mint).
+    pub buyer: Option<Pubkey>,
+    /// SHA-256 hash of the secret.
+    pub secret_hash: [u8; 32],
+    /// Token ID for the NFT.
+    pub token_id: u64,
+    /// NFT price in lamports.
+    pub price: u64,
+    /// NFT metadata URI.
+    pub metadata_uri: String,
+}
+
+/// Arguments for the mint-with-secret command, resolved to exactly one chain.
+#[derive(Debug, Clone)]
+pub enum MintWithSecretArgs {
+    /// Mint on Ethereum.
+    Ethereum(EthMintArgs),
+    /// Mint on Solana.
+    Solana(SolMintArgs),
+}
+
+/// Ethereum-specific arguments for minting an NFT.
+#[derive(Debug, Clone)]
+pub struct EthMintArgs {
+    /// Ethereum RPC endpoint URL.
+    pub eth_rpc: String,
+    /// Buyer's Ethereum private key.
+    pub buyer_eth_key: String,
+    /// Ethereum NFT contract address.
+    pub nft_contract: EthAddress,
+    /// The 32-byte secret preimage.
+    pub secret: [u8; 32],
+    /// Token ID to mint.
+    pub token_id: u64,
+}
+
+/// Solana-specific arguments for minting an NFT.
+#[derive(Debug, Clone)]
+pub struct SolMintArgs {
+    /// Solana RPC endpoint URL.
+    pub sol_rpc: String,
+    /// Solana WebSocket endpoint URL.
+    pub sol_ws: String,
+    /// Path to buyer's Solana keypair file.
+    pub buyer_sol_keypair: String,
+    /// Solana HTLC program ID.
+    pub program_id: String,
     /// The 32-byte secret preimage.
     pub secret: [u8; 32],
     /// Token ID to mint.
@@ -192,29 +208,42 @@ pub struct ClaimBtcArgs {
     pub destination: Option<BtcAddress>,
 }
 
-/// Arguments for the cancel-commit command.
+/// Arguments for the cancel-commit command, resolved to exactly one chain.
 ///
-/// Used to cancel an NFT commitment. On Ethereum, the seller can cancel
-/// before timeout; anyone can cancel after timeout. On Solana, only the
-/// seller can cancel.
+/// On Ethereum, the seller can cancel before timeout and anyone after timeout;
+/// on Solana, only the seller can cancel.
 #[derive(Debug, Clone)]
-pub struct CancelCommitArgs {
-    /// Target blockchain for the NFT.
-    pub chain: Chain,
+pub enum CancelCommitArgs {
+    /// Cancel on Ethereum.
+    Ethereum(EthCancelArgs),
+    /// Cancel on Solana.
+    Solana(SolCancelArgs),
+}
+
+/// Ethereum-specific arguments for cancelling a commitment.
+#[derive(Debug, Clone)]
+pub struct EthCancelArgs {
     /// Ethereum RPC endpoint URL.
-    pub eth_rpc: Option<String>,
+    pub eth_rpc: String,
     /// Caller's Ethereum private key.
-    pub caller_eth_key: Option<String>,
+    pub caller_eth_key: String,
     /// Ethereum NFT contract address.
-    pub nft_contract: Option<EthAddress>,
+    pub nft_contract: EthAddress,
+    /// Token ID of the commitment to cancel.
+    pub token_id: u64,
+}
+
+/// Solana-specific arguments for cancelling a commitment.
+#[derive(Debug, Clone)]
+pub struct SolCancelArgs {
     /// Solana RPC endpoint URL.
-    pub sol_rpc: Option<String>,
+    pub sol_rpc: String,
     /// Solana WebSocket endpoint URL.
-    pub sol_ws: Option<String>,
+    pub sol_ws: String,
     /// Path to caller's Solana keypair file.
-    pub caller_sol_keypair: Option<String>,
+    pub caller_sol_keypair: String,
     /// Solana HTLC program ID.
-    pub program_id: Option<String>,
+    pub program_id: String,
     /// Token ID of the commitment to cancel.
     pub token_id: u64,
 }
