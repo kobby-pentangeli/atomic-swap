@@ -1,7 +1,9 @@
 [package]
 name = "sol-htlc"
-version = "0.2.0"
+version = "0.3.0"
 description = "Hash Time Locked Contract (HTLC) for Solana"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/kobby-pentangeli/atomic-swap"
 edition = "2021"
 
 [lib]

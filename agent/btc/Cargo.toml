@@ -1,16 +1,17 @@
 [package]
 name = "btc-htlc"
-version = "0.2.0"
 description = "Hash Time Locked Contract (HTLC) for Bitcoin"
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/kobby-pentangeli/atomic-swap"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
+anyhow = { workspace = true }
+bitcoin = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }
 sha2 = { workspace = true }
-
-anyhow = "1.0"
-bitcoin = { version = "0.32", features = ["serde", "rand"] }
-thiserror = "2"
+thiserror = { workspace = true }
