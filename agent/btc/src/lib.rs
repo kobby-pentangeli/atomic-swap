@@ -31,11 +31,17 @@
 
 use bitcoin::opcodes::all::*;
 use bitcoin::script::Builder as ScriptBuilder;
+use bitcoin::transaction::InputWeightPrediction;
 use bitcoin::{Address, Network, PublicKey, ScriptBuf, Witness};
 use sha2::{Digest, Sha256};
 
 /// Result type for HTLC operations.
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// Maximum length of a DER-encoded ECDSA signature including its sighash flag
+/// byte. Used to predict the spending witness weight conservatively so fee
+/// estimation never under-pays.
+const MAX_ECDSA_SIG_LEN: usize = 73;
 
 /// Errors that can occur during HTLC operations.
 #[derive(Debug, thiserror::Error)]
@@ -43,9 +49,6 @@ pub enum Error {
     /// The provided secret does not hash to the expected value.
     #[error("invalid secret provided")]
     InvalidSecret,
-    /// The timeout value is invalid.
-    #[error("Invalid timeout value: {0}")]
-    InvalidTimeout(u16),
     /// The provided public key is invalid.
     #[error("Invalid public key")]
     InvalidPublicKey,
@@ -207,22 +210,22 @@ impl Contract {
         Ok(witness)
     }
 
-    /// Estimates the witness size for fee calculation
-    pub fn witness_size(&self, cond: &HtlcCondition) -> usize {
-        const SIGNATURE_SIZE: usize = 73; // Max DER signature size + SIGHASH flag
-        const SECRET_SIZE: usize = 32;
-        const CONTROL_BYTE_SIZE: usize = 1;
-
-        let script_size = self.script.len();
-
+    /// Predicts the spending input's weight contribution under `cond`.
+    ///
+    /// The witness element lengths mirror the stack produced by
+    /// [`Contract::create_witness`], making this the single source of witness
+    /// sizing for fee estimation. The redeem script is committed in the witness,
+    /// so its length is included.
+    pub fn predict_input_weight(&self, cond: &HtlcCondition) -> InputWeightPrediction {
+        let script_len = self.script.len();
         match cond {
-            HtlcCondition::Reveal { .. } => {
-                // <signature> <secret> <1> <script>
-                SIGNATURE_SIZE + SECRET_SIZE + CONTROL_BYTE_SIZE + script_size + 4 // +4 for length prefixes
+            // Stack: <signature> <secret> <1> <redeem-script>
+            HtlcCondition::Reveal { secret } => {
+                InputWeightPrediction::new(0, [MAX_ECDSA_SIG_LEN, secret.len(), 1, script_len])
             }
+            // Stack: <signature> <> <redeem-script>; the empty element selects the ELSE branch.
             HtlcCondition::Timeout => {
-                // <signature> <0> <script>
-                SIGNATURE_SIZE + 1 + script_size + 3 // +3 for length prefixes, +1 for empty byte
+                InputWeightPrediction::new(0, [MAX_ECDSA_SIG_LEN, 0, script_len])
             }
         }
     }
@@ -350,7 +353,7 @@ mod tests {
     }
 
     #[test]
-    fn estimate_witness_size() {
+    fn predict_input_weight() {
         let (_, seller_pk) = create_test_keypair();
         let (_, buyer_pk) = create_test_keypair();
         let secret = generate_random_secret();
@@ -366,11 +369,15 @@ mod tests {
 
         let contract = Contract::new(params);
 
-        let reveal_size = contract.witness_size(&HtlcCondition::Reveal { secret });
-        let timeout_size = contract.witness_size(&HtlcCondition::Timeout);
+        let reveal = contract
+            .predict_input_weight(&HtlcCondition::Reveal { secret })
+            .weight();
+        let timeout = contract
+            .predict_input_weight(&HtlcCondition::Timeout)
+            .weight();
 
-        assert!(reveal_size > timeout_size);
-        assert!(reveal_size > 100);
+        // The reveal stack additionally carries the 32-byte secret.
+        assert!(reveal > timeout);
     }
 
     #[test]
@@ -424,5 +431,196 @@ mod tests {
         // Witness should have 3 elements: signature, FALSE (empty), script
         assert_eq!(witness.len(), 3);
         assert!(witness.nth(1).unwrap().is_empty());
+    }
+
+    /// Script-execution tests that run the locking script through the consensus
+    /// interpreter (`bitcoinconsensus`) for both spend paths and their failure
+    /// modes.
+    mod consensus {
+        use bitcoin::absolute::LockTime;
+        use bitcoin::hashes::Hash;
+        use bitcoin::secp256k1::Message;
+        use bitcoin::sighash::SighashCache;
+        use bitcoin::transaction::Version;
+        use bitcoin::{
+            Amount, EcdsaSighashType, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut,
+            Txid, Witness,
+        };
+
+        use super::*;
+
+        /// Absolute block height encoded as the contract timeout under test.
+        const TIMEOUT_HEIGHT: u32 = 200;
+        /// Value locked in the funding output.
+        const FUND_VALUE: Amount = Amount::from_sat(100_000);
+        /// Value of the spending output; the difference stands in for the fee.
+        const SPEND_VALUE: Amount = Amount::from_sat(99_000);
+
+        fn htlc(secret_hash: [u8; 32], seller: PublicKey, buyer: PublicKey) -> Contract {
+            Contract::new(HtlcParams {
+                secret_hash,
+                seller,
+                buyer,
+                timeout: TIMEOUT_HEIGHT,
+                network: Network::Regtest,
+            })
+        }
+
+        /// Builds the funding output and an unsigned single-input spend of it.
+        fn unsigned_spend(
+            contract: &Contract,
+            lock_time: LockTime,
+            sequence: Sequence,
+        ) -> (Transaction, TxOut) {
+            let funding = TxOut {
+                value: FUND_VALUE,
+                script_pubkey: contract.address().script_pubkey(),
+            };
+            let tx = Transaction {
+                version: Version::TWO,
+                lock_time,
+                input: vec![TxIn {
+                    previous_output: OutPoint {
+                        txid: Txid::all_zeros(),
+                        vout: 0,
+                    },
+                    script_sig: ScriptBuf::new(),
+                    sequence,
+                    witness: Witness::new(),
+                }],
+                output: vec![TxOut {
+                    value: SPEND_VALUE,
+                    script_pubkey: contract.address().script_pubkey(),
+                }],
+            };
+            (tx, funding)
+        }
+
+        /// Signs the single input against the P2WSH sighash and appends the
+        /// `SIGHASH_ALL` flag, matching the client's signing path.
+        fn sign(contract: &Contract, tx: &Transaction, value: Amount, key: &SecretKey) -> Vec<u8> {
+            let secp = Secp256k1::new();
+            let sighash = SighashCache::new(tx)
+                .p2wsh_signature_hash(0, &contract.script, value, EcdsaSighashType::All)
+                .expect("p2wsh sighash");
+            let mut sig = secp
+                .sign_ecdsa(&Message::from(sighash), key)
+                .serialize_der()
+                .to_vec();
+            sig.push(EcdsaSighashType::All as u8);
+            sig
+        }
+
+        #[test]
+        fn reveal_path_accepts_valid_secret() {
+            let (seller, seller_pk) = create_test_keypair();
+            let (_, buyer_pk) = create_test_keypair();
+            let secret = generate_random_secret();
+            let contract = htlc(hash_secret(&secret), seller_pk, buyer_pk);
+
+            let (mut tx, funding) = unsigned_spend(&contract, LockTime::ZERO, Sequence::MAX);
+            let sig = sign(&contract, &tx, funding.value, &seller.inner);
+            tx.input[0].witness = contract
+                .create_witness(HtlcCondition::Reveal { secret }, sig)
+                .unwrap();
+
+            tx.verify(|_| Some(funding.clone()))
+                .expect("reveal spend with the correct secret must verify");
+        }
+
+        #[test]
+        fn timeout_path_accepts_at_locktime() {
+            let (_, seller_pk) = create_test_keypair();
+            let (buyer, buyer_pk) = create_test_keypair();
+            let secret = generate_random_secret();
+            let contract = htlc(hash_secret(&secret), seller_pk, buyer_pk);
+
+            // OP_CLTV requires a non-final sequence and nLockTime at or past the height.
+            let (mut tx, funding) = unsigned_spend(
+                &contract,
+                LockTime::from_height(TIMEOUT_HEIGHT).unwrap(),
+                Sequence::ENABLE_LOCKTIME_NO_RBF,
+            );
+            let sig = sign(&contract, &tx, funding.value, &buyer.inner);
+            tx.input[0].witness = contract
+                .create_witness(HtlcCondition::Timeout, sig)
+                .unwrap();
+
+            tx.verify(|_| Some(funding.clone()))
+                .expect("timeout spend at the locktime height must verify");
+        }
+
+        #[test]
+        fn timeout_path_rejects_before_locktime() {
+            let (_, seller_pk) = create_test_keypair();
+            let (buyer, buyer_pk) = create_test_keypair();
+            let secret = generate_random_secret();
+            let contract = htlc(hash_secret(&secret), seller_pk, buyer_pk);
+
+            let (mut tx, funding) = unsigned_spend(
+                &contract,
+                LockTime::from_height(TIMEOUT_HEIGHT - 1).unwrap(),
+                Sequence::ENABLE_LOCKTIME_NO_RBF,
+            );
+            let sig = sign(&contract, &tx, funding.value, &buyer.inner);
+            tx.input[0].witness = contract
+                .create_witness(HtlcCondition::Timeout, sig)
+                .unwrap();
+
+            assert!(
+                tx.verify(|_| Some(funding.clone())).is_err(),
+                "a timeout spend below the locktime height must be rejected"
+            );
+        }
+
+        #[test]
+        fn reveal_path_rejects_wrong_secret() {
+            let (seller, seller_pk) = create_test_keypair();
+            let (_, buyer_pk) = create_test_keypair();
+            let secret = generate_random_secret();
+            let contract = htlc(hash_secret(&secret), seller_pk, buyer_pk);
+
+            let (mut tx, funding) = unsigned_spend(&contract, LockTime::ZERO, Sequence::MAX);
+            let sig = sign(&contract, &tx, funding.value, &seller.inner);
+
+            // create_witness rejects a wrong preimage, so assemble the stack
+            // directly to prove the script itself enforces the hash lock.
+            let wrong = generate_random_secret();
+            let mut witness = Witness::new();
+            witness.push(sig);
+            witness.push(&wrong[..]);
+            witness.push([0x01]);
+            witness.push(contract.script.as_bytes());
+            tx.input[0].witness = witness;
+
+            assert!(
+                tx.verify(|_| Some(funding.clone())).is_err(),
+                "a reveal spend with the wrong secret must be rejected"
+            );
+        }
+
+        #[test]
+        fn reveal_path_rejects_tampered_script() {
+            let (seller, seller_pk) = create_test_keypair();
+            let (_, buyer_pk) = create_test_keypair();
+            let secret = generate_random_secret();
+            let contract = htlc(hash_secret(&secret), seller_pk, buyer_pk);
+
+            let (mut tx, funding) = unsigned_spend(&contract, LockTime::ZERO, Sequence::MAX);
+            let sig = sign(&contract, &tx, funding.value, &seller.inner);
+
+            // A witness script that does not hash to the committed P2WSH program.
+            let mut witness = Witness::new();
+            witness.push(sig);
+            witness.push(&secret[..]);
+            witness.push([0x01]);
+            witness.push([0xde, 0xad, 0xbe, 0xef]);
+            tx.input[0].witness = witness;
+
+            assert!(
+                tx.verify(|_| Some(funding.clone())).is_err(),
+                "a reveal spend committing a tampered script must be rejected"
+            );
+        }
     }
 }

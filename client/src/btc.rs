@@ -9,11 +9,11 @@ use std::collections::HashSet;
 use anyhow::{Context, Result, anyhow};
 use bitcoin::key::Keypair;
 use bitcoin::{
-    Address, Amount, Network, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid,
-    Witness, absolute, consensus, transaction,
+    Address, Amount, FeeRate, Network, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut,
+    Txid, Witness, absolute, consensus, transaction,
 };
 use bitcoincore_rpc::{Auth, Client as RpcClient, RpcApi};
-use btc_htlc::Contract as BtcContract;
+use btc_htlc::{Contract as BtcContract, HtlcCondition};
 use tracing::{debug, info};
 
 mod fee;
@@ -101,14 +101,12 @@ impl BtcClient {
         let address = contract.address();
         info!("Funding contract at {address} with {} BTC", amount.to_btc());
 
-        let fee_buffer = Amount::from_sat(1000);
-        let required = amount + fee_buffer;
+        let htlc_script = address.script_pubkey();
+        let change_script = self.get_new_address()?.script_pubkey();
+        let output_lens = [htlc_script.len(), change_script.len()];
 
-        let utxos = self
-            .select_utxos(required)
-            .context("Failed to select UTXOs for funding")?;
-
-        let total_input = utxos.iter().map(|u| u.tx_out.value).sum::<Amount>();
+        let rate = fee::fee_rate(&self.rpc);
+        let (utxos, total_input, fee) = self.select_funding_utxos(amount, rate, &output_lens)?;
 
         let inputs = utxos
             .iter()
@@ -120,20 +118,19 @@ impl BtcClient {
             })
             .collect::<Vec<TxIn>>();
 
-        let fee = fee::estimate_fee_for_htlc_funding(&self.rpc, inputs.len(), 2)?;
         let change_amount = total_input
-            .checked_sub(amount + fee)
+            .checked_sub(amount)
+            .and_then(|rem| rem.checked_sub(fee))
             .ok_or_else(|| anyhow!("Insufficient funds after fee calculation"))?;
 
         let mut outputs = vec![TxOut {
             value: amount,
-            script_pubkey: address.script_pubkey(),
+            script_pubkey: htlc_script,
         }];
         if change_amount > fee::DUST_THRESHOLD {
-            let change_addr = self.get_new_address()?;
             outputs.push(TxOut {
                 value: change_amount,
-                script_pubkey: change_addr.script_pubkey(),
+                script_pubkey: change_script,
             });
         }
 
@@ -199,8 +196,16 @@ impl BtcClient {
 
         let output = self.get_and_verify_htlc_output(contract, txid, vout)?;
         let dest_addr = self.resolve_destination(dst)?;
+        let dest_script = dest_addr.script_pubkey();
 
-        let (claim_amount, fee) = fee::calculate_claim_amount(&self.rpc, &output)?;
+        let rate = fee::fee_rate(&self.rpc);
+        let fee = fee::htlc_spend_fee(
+            rate,
+            contract,
+            &HtlcCondition::Reveal { secret: *secret },
+            dest_script.len(),
+        )?;
+        let claim_amount = fee::net_after_fee(output.value, fee)?;
 
         let unsigned_tx = Transaction {
             version: transaction::Version::TWO,
@@ -213,7 +218,7 @@ impl BtcClient {
             }],
             output: vec![TxOut {
                 value: claim_amount,
-                script_pubkey: dest_addr.script_pubkey(),
+                script_pubkey: dest_script,
             }],
         };
 
@@ -273,7 +278,7 @@ impl BtcClient {
     ) -> Result<Txid> {
         info!("Refunding {txid}:{vout} via timeout path");
         let cur_height = self.rpc.get_block_count()?;
-        let timeout_height = contract.timeout as u64;
+        let timeout_height = u64::from(contract.timeout);
 
         if cur_height < timeout_height {
             return Err(anyhow!(
@@ -283,8 +288,11 @@ impl BtcClient {
 
         let output = self.get_and_verify_htlc_output(contract, txid, vout)?;
         let dest_addr = self.resolve_destination(dst)?;
+        let dest_script = dest_addr.script_pubkey();
 
-        let (refund_amount, fee) = fee::calculate_timeout_amount(&self.rpc, &output)?;
+        let rate = fee::fee_rate(&self.rpc);
+        let fee = fee::htlc_spend_fee(rate, contract, &HtlcCondition::Timeout, dest_script.len())?;
+        let refund_amount = fee::net_after_fee(output.value, fee)?;
         let lock_time =
             absolute::LockTime::from_height(contract.timeout).context("Invalid timeout height")?;
 
@@ -294,12 +302,12 @@ impl BtcClient {
             input: vec![TxIn {
                 previous_output: OutPoint { txid, vout },
                 script_sig: ScriptBuf::new(),
-                sequence: Sequence::from_height(0),
+                sequence: Sequence::ENABLE_LOCKTIME_NO_RBF,
                 witness: Witness::new(),
             }],
             output: vec![TxOut {
                 value: refund_amount,
-                script_pubkey: dest_addr.script_pubkey(),
+                script_pubkey: dest_script,
             }],
         };
 
@@ -327,8 +335,18 @@ impl BtcClient {
         Ok(refund_txid)
     }
 
-    /// Select UTXOs sufficient for the required amount.
-    fn select_utxos(&self, min_amount: Amount) -> Result<Vec<UtxoInfo>> {
+    /// Returns the current best-block height.
+    ///
+    /// Used at lock time to convert a relative timeout window into the absolute
+    /// block height committed in the HTLC script.
+    pub fn block_height(&self) -> Result<u64> {
+        self.rpc
+            .get_block_count()
+            .context("Failed to read current block height")
+    }
+
+    /// List the wallet's spendable UTXOs at the client's own address.
+    fn list_spendable_utxos(&self) -> Result<Vec<UtxoInfo>> {
         let addresses = [&self.own_address];
         let target_scripts = addresses
             .iter()
@@ -340,7 +358,7 @@ impl BtcClient {
             .list_unspent(None, None, Some(&addresses), None, None)
             .context("Failed to list unspent outputs")?;
 
-        let (selected, total) = unspent
+        Ok(unspent
             .into_iter()
             .filter(|utxo| utxo.spendable && target_scripts.contains(&utxo.script_pub_key))
             .map(|utxo| UtxoInfo {
@@ -353,23 +371,52 @@ impl BtcClient {
                     script_pubkey: utxo.script_pub_key,
                 },
             })
-            .fold((Vec::new(), Amount::ZERO), |(mut selected, total), utxo| {
-                if total < min_amount {
-                    let new_total = total + utxo.tx_out.value;
-                    selected.push(utxo);
-                    (selected, new_total)
-                } else {
-                    (selected, total)
-                }
-            });
+            .collect())
+    }
 
-        if total < min_amount {
-            return Err(anyhow!(
-                "Insufficient funds: need {} BTC, have {} BTC",
-                min_amount.to_btc(),
+    /// Select UTXOs covering `amount` plus the funding fee, where the fee is
+    /// derived from the segwit weight of the selected input set and the given
+    /// output scripts. Returns the selection, its total value, and the fee, all
+    /// consistent with one another so change is computed against the same fee.
+    fn select_funding_utxos(
+        &self,
+        amount: Amount,
+        rate: FeeRate,
+        output_lens: &[usize],
+    ) -> Result<(Vec<UtxoInfo>, Amount, Amount)> {
+        let target = |selected: &[UtxoInfo]| -> Result<Amount> {
+            let fee = fee::funding_fee(rate, selected.len(), output_lens)?;
+            amount
+                .checked_add(fee)
+                .ok_or_else(|| anyhow!("Funding target overflowed"))
+        };
+
+        let (selected, total) = self.list_spendable_utxos()?.into_iter().try_fold(
+            (Vec::new(), Amount::ZERO),
+            |(mut selected, total), utxo| -> Result<(Vec<UtxoInfo>, Amount)> {
+                if total >= target(&selected)? {
+                    Ok((selected, total))
+                } else {
+                    let new_total = total
+                        .checked_add(utxo.tx_out.value)
+                        .ok_or_else(|| anyhow!("UTXO total overflowed"))?;
+                    selected.push(utxo);
+                    Ok((selected, new_total))
+                }
+            },
+        )?;
+
+        let fee = fee::funding_fee(rate, selected.len(), output_lens)?;
+        let required = amount
+            .checked_add(fee)
+            .ok_or_else(|| anyhow!("Funding target overflowed"))?;
+        (total >= required).then_some(()).ok_or_else(|| {
+            anyhow!(
+                "Insufficient funds: need {} BTC including fee, have {} BTC",
+                required.to_btc(),
                 total.to_btc()
-            ));
-        }
+            )
+        })?;
 
         info!(
             "Selected {} UTXOs totaling {} BTC",
@@ -377,7 +424,7 @@ impl BtcClient {
             total.to_btc()
         );
 
-        Ok(selected)
+        Ok((selected, total, fee))
     }
 
     /// Get and verify the HTLC output from a transaction.

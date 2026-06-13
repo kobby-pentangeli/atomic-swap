@@ -15,3 +15,7 @@ hex = { workspace = true }
 rand = { workspace = true }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+# Script-interpreter verification for the HTLC spend-path tests.
+bitcoin = { workspace = true, features = ["bitcoinconsensus"] }

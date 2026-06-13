@@ -81,7 +81,7 @@ enum Commands {
         /// Amount of Bitcoin to lock (in satoshis)
         #[arg(long, env = "BTC_AMOUNT", default_value = "100000")]
         btc_amount: u64,
-        /// HTLC timeout in blocks
+        /// HTLC timeout as a relative window in blocks from the current chain tip
         #[arg(long, env = "HTLC_TIMEOUT", default_value = "144")]
         timeout: u32,
         /// File path to securely write the generated secret
@@ -222,9 +222,9 @@ enum Commands {
         /// Output index in the lock transaction
         #[arg(long, default_value = "0")]
         lock_vout: u32,
-        /// HTLC timeout in blocks
-        #[arg(long, env = "HTLC_TIMEOUT", default_value = "144")]
-        timeout: u32,
+        /// Absolute HTLC timeout height (read from --secret-file when provided)
+        #[arg(long, env = "HTLC_TIMEOUT")]
+        timeout: Option<u32>,
         /// Destination address for claimed Bitcoin
         #[arg(long)]
         destination: Option<String>,
@@ -293,9 +293,6 @@ enum Commands {
         /// Output index in the lock transaction
         #[arg(long, default_value = "0")]
         lock_vout: u32,
-        /// HTLC timeout in blocks
-        #[arg(long, env = "HTLC_TIMEOUT", default_value = "144")]
-        timeout: u32,
         /// Destination address for refunded Bitcoin
         #[arg(long)]
         destination: Option<String>,
@@ -468,7 +465,7 @@ async fn main() -> Result<()> {
                 .parse::<Chain>()
                 .context("Invalid chain specification")?;
 
-            let (secret_bytes, _, _) = utils::resolve_secrets(secret, secret_file)?;
+            let (secret_bytes, _, _, _) = utils::resolve_secrets(secret, secret_file)?;
 
             match &chain {
                 Chain::Ethereum => {
@@ -529,7 +526,7 @@ async fn main() -> Result<()> {
         } => {
             let network = utils::parse_btc_network(&btc_network)?;
 
-            let (secret, file_secret_hash, file_lock_txid) =
+            let (secret, file_secret_hash, file_lock_txid, file_timeout) =
                 utils::resolve_secrets(secret, secret_file.clone())?;
 
             let secret_hash = secret_hash
@@ -548,6 +545,10 @@ async fn main() -> Result<()> {
                 .ok_or_else(|| {
                     anyhow!("Lock txid required (use --lock-txid or provide via --secret-file)")
                 })?;
+
+            let timeout = timeout.or(file_timeout).ok_or_else(|| {
+                anyhow!("Timeout height required (use --timeout or provide via --secret-file)")
+            })?;
 
             let args = ClaimBtcArgs {
                 btc_rpc,
@@ -640,7 +641,6 @@ async fn main() -> Result<()> {
             seller_btc_pubkey,
             secret_file,
             lock_vout,
-            timeout,
             destination,
         } => {
             let network = utils::parse_btc_network(&btc_network)?;
@@ -654,7 +654,6 @@ async fn main() -> Result<()> {
                 seller_btc_pubkey,
                 secret_file,
                 lock_vout,
-                timeout,
                 destination: destination
                     .map(|s| utils::parse_btc_address(&s, network))
                     .transpose()?,

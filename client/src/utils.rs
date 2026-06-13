@@ -22,18 +22,21 @@ pub const MINT_AVAILABILITY_TIMEOUT: Duration = Duration::from_secs(120);
 /// Interval between mint availability checks.
 pub const MINT_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 
-/// Secret file data: (secret, optional secret_hash, optional lock_txid).
-type SecretFileData = ([u8; 32], Option<[u8; 32]>, Option<Txid>);
+/// Secret file data: (secret, optional secret_hash, optional lock_txid, optional timeout height).
+type SecretFileData = ([u8; 32], Option<[u8; 32]>, Option<Txid>, Option<u32>);
 
 /// Writes the generated secret and related data to a file with restricted permissions.
 ///
 /// The file is created with mode 0600 (owner read/write only) to protect the secret.
-/// The format is a simple key-value text file for easy parsing.
+/// The format is a simple key-value text file for easy parsing. The absolute
+/// timeout height is persisted so claim and refund reconstruct the exact same
+/// HTLC script as the lock.
 pub fn write_secret_to_file(
     path: &Path,
     secret: &[u8; 32],
     secret_hash: &[u8; 32],
     lock_txid: &Txid,
+    timeout_height: u32,
 ) -> Result<()> {
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
@@ -55,6 +58,7 @@ pub fn write_secret_to_file(
     writeln!(file, "SECRET={}", hex::encode(secret))?;
     writeln!(file, "SECRET_HASH={}", hex::encode(secret_hash))?;
     writeln!(file, "LOCK_TXID={lock_txid}")?;
+    writeln!(file, "TIMEOUT_HEIGHT={timeout_height}")?;
 
     Ok(())
 }
@@ -66,10 +70,11 @@ pub fn write_secret_to_file(
 /// SECRET=<hex>
 /// SECRET_HASH=<hex>
 /// LOCK_TXID=<txid>
+/// TIMEOUT_HEIGHT=<u32>
 /// ```
 ///
 /// Lines starting with `#` are treated as comments and ignored.
-pub fn parse_secret_file(path: &Path) -> Result<([u8; 32], [u8; 32], Txid)> {
+pub fn parse_secret_file(path: &Path) -> Result<([u8; 32], [u8; 32], Txid, u32)> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read secret file: {}", path.display()))?;
 
@@ -99,12 +104,21 @@ pub fn parse_secret_file(path: &Path) -> Result<([u8; 32], [u8; 32], Txid)> {
                 .context("Invalid LOCK_TXID in secret file")
         })?;
 
-    Ok((secret, secret_hash, lock_txid))
+    let timeout_height = entries
+        .get("TIMEOUT_HEIGHT")
+        .ok_or_else(|| anyhow!("TIMEOUT_HEIGHT not found in file: {}", path.display()))
+        .and_then(|v| {
+            v.parse::<u32>()
+                .context("Invalid TIMEOUT_HEIGHT in secret file")
+        })?;
+
+    Ok((secret, secret_hash, lock_txid, timeout_height))
 }
 
 /// Resolves a secret and optional metadata from either a direct hex string or a file.
 ///
-/// When reading from a file, also extracts the secret hash and lock txid if present.
+/// When reading from a file, also extracts the secret hash, lock txid, and the
+/// absolute timeout height.
 ///
 /// # Errors
 ///
@@ -114,10 +128,15 @@ pub fn resolve_secrets(
     secret_file: Option<PathBuf>,
 ) -> Result<SecretFileData> {
     match (secret, secret_file) {
-        (Some(s), None) => Ok((decode_hex_secret(&s)?, None, None)),
+        (Some(s), None) => Ok((decode_hex_secret(&s)?, None, None, None)),
         (None, Some(path)) => {
-            let (secret_bytes, secret_hash, lock_txid) = parse_secret_file(&path)?;
-            Ok((secret_bytes, Some(secret_hash), Some(lock_txid)))
+            let (secret_bytes, secret_hash, lock_txid, timeout_height) = parse_secret_file(&path)?;
+            Ok((
+                secret_bytes,
+                Some(secret_hash),
+                Some(lock_txid),
+                Some(timeout_height),
+            ))
         }
         (None, None) => Err(anyhow!("Either --secret or --secret-file must be provided")),
         (Some(_), Some(_)) => Err(anyhow!("--secret and --secret-file are mutually exclusive")),

@@ -90,7 +90,8 @@ pub struct LockBtcArgs {
     pub seller_btc_pubkey: String,
     /// Amount to lock in satoshis.
     pub btc_amount: u64,
-    /// HTLC timeout in blocks.
+    /// HTLC timeout as a relative window in blocks, resolved at lock time against
+    /// the current chain tip into an absolute block height.
     pub timeout: u32,
     /// Optional file path to write the generated secret.
     pub secret_output_file: Option<PathBuf>,
@@ -235,12 +236,12 @@ pub struct RefundBtcArgs {
     pub buyer_btc_key: String,
     /// Seller's Bitcoin public key in hex format.
     pub seller_btc_pubkey: String,
-    /// File path to the generated secret from the lock transaction.
+    /// File path to the generated secret from the lock transaction. The absolute
+    /// timeout height is read from this file so the refund reconstructs the exact
+    /// HTLC script committed at lock time.
     pub secret_file: PathBuf,
     /// Output index in the lock transaction.
     pub lock_vout: u32,
-    /// HTLC timeout in blocks.
-    pub timeout: u32,
     /// Optional destination address (defaults to buyer's wallet).
     pub destination: Option<BtcAddress>,
 }
@@ -321,7 +322,8 @@ pub struct LockBtcResult {
     pub amount_btc: f64,
     pub secret_hash: String,
     pub secret_file: String,
-    pub timeout_blocks: u32,
+    pub timeout_window: u32,
+    pub timeout_height: u32,
 }
 
 impl Printable for LockBtcResult {
@@ -336,7 +338,13 @@ impl Printable for LockBtcResult {
         );
         print_field("Secret Hash:", &self.secret_hash);
         print_field("Secret File:", &self.secret_file);
-        print_field("Timeout:", &format!("{} blocks", self.timeout_blocks));
+        print_field(
+            "Timeout:",
+            &format!(
+                "{} blocks (expires at height {})",
+                self.timeout_window, self.timeout_height
+            ),
+        );
         println!();
         print_status(
             Color::Yellow,

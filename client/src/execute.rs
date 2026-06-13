@@ -45,27 +45,35 @@ pub fn lock_bitcoin(args: LockBtcArgs) -> Result<LockBtcResult> {
     let secret_bytes = btc_htlc::hex_to_secret(&r_secret_hex)?;
     let secret_hash = btc_htlc::hash_secret(&secret_bytes);
 
-    let contract_params = HtlcParams {
+    let auth = Auth::UserPass(args.btc_user.clone(), args.btc_pass.clone());
+    let btc_client = BtcClient::new(&args.btc_rpc, auth, args.btc_network, buyer_keypair)
+        .context("Failed to initialize Bitcoin client")?;
+
+    let current_height = btc_client.block_height()?;
+    let timeout_height = u32::try_from(
+        current_height
+            .checked_add(u64::from(args.timeout))
+            .ok_or_else(|| anyhow!("Timeout window overflows the chain height"))?,
+    )
+    .context("Resolved timeout height exceeds the protocol maximum")?;
+
+    let btc_contract = BtcContract::new(HtlcParams {
         secret_hash,
         seller: seller_pubkey,
         buyer: buyer_pubkey,
-        timeout: args.timeout,
+        timeout: timeout_height,
         network: args.btc_network,
-    };
-    let btc_contract = BtcContract::new(contract_params);
+    });
     let htlc_address = btc_contract.address();
 
     debug!(
         htlc_address = %htlc_address,
         seller_pubkey = %seller_pubkey,
         buyer_pubkey = %buyer_pubkey,
-        timeout_blocks = %args.timeout,
+        timeout_window = %args.timeout,
+        timeout_height = %timeout_height,
         "Created HTLC contract"
     );
-
-    let auth = Auth::UserPass(args.btc_user.clone(), args.btc_pass.clone());
-    let btc_client = BtcClient::new(&args.btc_rpc, auth, args.btc_network, buyer_keypair)
-        .context("Failed to initialize Bitcoin client")?;
 
     debug!("Initiating Bitcoin lock transaction");
     let amount = Amount::from_sat(args.btc_amount);
@@ -77,16 +85,20 @@ pub fn lock_bitcoin(args: LockBtcArgs) -> Result<LockBtcResult> {
     debug!(
         txid = %lock_txid,
         amount_btc = %amount.to_btc(),
-        htlc_address = %btc_contract.address(),
+        htlc_address = %htlc_address,
         "Bitcoin funds locked successfully"
     );
-
-    debug!(secret = %hex::encode(secret_bytes), "Generated secret");
 
     let secret_file = args
         .secret_output_file
         .unwrap_or_else(|| PathBuf::from(DEFAULT_SECRETS_DIR).join(DEFAULT_SECRETS_FILE));
-    utils::write_secret_to_file(&secret_file, &secret_bytes, &secret_hash, &lock_txid)?;
+    utils::write_secret_to_file(
+        &secret_file,
+        &secret_bytes,
+        &secret_hash,
+        &lock_txid,
+        timeout_height,
+    )?;
     debug!(path = %secret_file.display(), "Secret written to file");
 
     Ok(LockBtcResult {
@@ -96,7 +108,8 @@ pub fn lock_bitcoin(args: LockBtcArgs) -> Result<LockBtcResult> {
         amount_btc: amount.to_btc(),
         secret_hash: hex::encode(secret_hash),
         secret_file: secret_file.display().to_string(),
-        timeout_blocks: args.timeout,
+        timeout_window: args.timeout,
+        timeout_height,
     })
 }
 
@@ -250,13 +263,13 @@ pub fn refund_bitcoin(args: RefundBtcArgs) -> Result<RefundBtcResult> {
     let buyer_pubkey = PublicKey::from(buyer_keypair.public_key());
     let seller_pubkey = utils::validate_btc_pubkey(&args.seller_btc_pubkey, "seller")?;
 
-    let (_, secret_hash, lock_txid) = utils::parse_secret_file(&args.secret_file)?;
+    let (_, secret_hash, lock_txid, timeout_height) = utils::parse_secret_file(&args.secret_file)?;
 
     let contract_params = HtlcParams {
         secret_hash,
         seller: seller_pubkey,
         buyer: buyer_pubkey,
-        timeout: args.timeout,
+        timeout: timeout_height,
         network: args.btc_network,
     };
     let btc_contract = BtcContract::new(contract_params);
