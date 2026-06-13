@@ -10,15 +10,15 @@
 use std::str::FromStr;
 use std::sync::Arc;
 
-use anchor_client::solana_sdk::commitment_config::CommitmentConfig;
-use anchor_client::solana_sdk::pubkey::Pubkey;
-use anchor_client::solana_sdk::signature::{Keypair, Signature, Signer, read_keypair_file};
-use anchor_client::{Client, Cluster, Program};
-use anchor_lang::{solana_program, system_program};
+use anchor_client::{Client, Cluster, CommitmentConfig, Program};
+use anchor_lang::system_program;
 use anchor_spl::associated_token;
 use anchor_spl::metadata::mpl_token_metadata;
 use anyhow::{Context, Result, anyhow};
 use sol_htlc::{Commitment, MAX_NAME_LEN, MAX_SYMBOL_LEN, MAX_URI_LEN, ProgramState};
+use solana_sdk::pubkey::Pubkey;
+use solana_sdk::signature::{Keypair, Signature, Signer};
+use solana_sdk::signer::keypair::read_keypair_file;
 use tracing::{debug, info};
 
 use crate::types::{
@@ -111,6 +111,7 @@ impl SolClient {
     /// # Errors
     ///
     /// Returns an error if a commitment already exists for this token ID.
+    #[allow(clippy::too_many_arguments)]
     pub fn commit_for_mint(
         &self,
         secret_hash: [u8; 32],
@@ -119,6 +120,7 @@ impl SolClient {
         name: String,
         symbol: String,
         uri: String,
+        buyer: Option<Pubkey>,
     ) -> Result<Signature> {
         if name.len() > MAX_NAME_LEN {
             return Err(anyhow!("Name too long (max 32 chars)"));
@@ -141,20 +143,14 @@ impl SolClient {
             &[b"commitment", &token_id.to_le_bytes()],
             &self.program_id,
         );
-        let (mint, _) =
-            Pubkey::find_program_address(&[b"mint", &token_id.to_le_bytes()], &self.program_id);
 
         let sig = self
             .program
             .request()
             .accounts(sol_htlc::accounts::CommitForMint {
                 commitment,
-                mint,
-                program_state: self.program_state_pda,
                 seller: self.payer.pubkey(),
-                token_program: anchor_spl::token::ID,
                 system_program: system_program::ID,
-                rent: solana_program::sysvar::rent::ID,
             })
             .args(sol_htlc::instruction::CommitForMint {
                 hash: secret_hash,
@@ -163,6 +159,7 @@ impl SolClient {
                 name,
                 symbol,
                 uri,
+                buyer,
             })
             .send()
             .context("Failed to create commitment")?;
@@ -184,12 +181,6 @@ impl SolClient {
     /// - The secret doesn't match the commitment hash
     pub fn mint_with_secret(&self, secret: [u8; 32], token_id: u64) -> Result<Signature> {
         let commitment = self.get_commitment(token_id)?;
-        if commitment.is_used {
-            return Err(anyhow!("Commitment has already been used"));
-        }
-        if commitment.token_id != token_id {
-            return Err(anyhow!("Token ID mismatch"));
-        }
 
         let (commitment_pda, _) = Pubkey::find_program_address(
             &[b"commitment", &token_id.to_le_bytes()],
@@ -206,6 +197,15 @@ impl SolClient {
             ],
             &mpl_token_metadata::ID,
         );
+        let (master_edition_pda, _) = Pubkey::find_program_address(
+            &[
+                b"metadata",
+                mpl_token_metadata::ID.as_ref(),
+                mint_pda.as_ref(),
+                b"edition",
+            ],
+            &mpl_token_metadata::ID,
+        );
 
         let sig = self
             .program
@@ -215,6 +215,7 @@ impl SolClient {
                 mint: mint_pda,
                 token_account,
                 metadata: metadata_pda,
+                master_edition: master_edition_pda,
                 program_state: self.program_state_pda,
                 seller_info: commitment.seller,
                 buyer: self.payer.pubkey(),
@@ -222,7 +223,7 @@ impl SolClient {
                 associated_token_program: associated_token::ID,
                 metadata_program: mpl_token_metadata::ID,
                 system_program: system_program::ID,
-                rent: solana_program::sysvar::rent::ID,
+                rent: solana_sdk::sysvar::rent::ID,
             })
             .args(sol_htlc::instruction::MintWithSecret { secret, token_id })
             .send()
@@ -246,9 +247,6 @@ impl SolClient {
         let commitment = self.get_commitment(token_id)?;
         if commitment.seller != self.payer.pubkey() {
             return Err(anyhow!("Only the seller can cancel the commitment"));
-        }
-        if commitment.is_used {
-            return Err(anyhow!("Cannot cancel a used commitment"));
         }
 
         let (commitment, _) = Pubkey::find_program_address(
@@ -346,20 +344,19 @@ pub fn commit_for_mint(args: CommitForMintArgs) -> Result<CommitResult> {
     }
 
     match client.get_commitment(token_id) {
-        Ok(commitment) if !commitment.is_used => {
+        Ok(commitment) => {
             return Err(anyhow!(
                 "Token {token_id} already has an active commitment from {}",
                 commitment.seller
             ));
-        }
-        Ok(_) => {
-            debug!("Commitment exists but is used, proceeding");
         }
         Err(e) => {
             debug!(error = %e, "No existing commitment found, proceeding");
         }
     }
 
+    // The program supports binding an authorized buyer; the CLI does not yet
+    // surface it, so commitments are left open here.
     let sig = client
         .commit_for_mint(
             secret_hash,
@@ -368,6 +365,7 @@ pub fn commit_for_mint(args: CommitForMintArgs) -> Result<CommitResult> {
             name.clone(),
             symbol.clone(),
             metadata_uri.clone(),
+            None,
         )
         .context("Failed to commit NFT for minting on Solana")?;
 

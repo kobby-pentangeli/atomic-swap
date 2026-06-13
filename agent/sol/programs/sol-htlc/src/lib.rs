@@ -1,25 +1,34 @@
-//! Hash Time Locked Contract (HTLC) for Solana NFT Minting
+//! Hash Time Locked Contract (HTLC) for Solana NFT minting.
 //!
-//! This program enables cross-chain atomic swaps by allowing sellers to commit
-//! to minting an NFT that can only be claimed by revealing a secret. The secret
-//! hash mechanism ensures atomicity with Bitcoin HTLCs.
+//! The NFT-chain side of a cross-chain atomic swap. A seller commits to mint a
+//! token behind the SHA-256 hash of a secret; a buyer who knows the preimage
+//! reveals it to mint the NFT (after locking Bitcoin in the matching HTLC); the
+//! seller then reuses that now-public secret to claim the Bitcoin. The reveal is
+//! the cross-chain hinge: the same preimage satisfies `OP_SHA256` on Bitcoin.
 //!
-//! # Flow
+//! # Hash algorithm
 //!
-//! 1. Seller calls [`commit_for_mint`] with a SHA256 hash of a secret
-//! 2. Buyer reveals the secret by calling [`mint_with_secret`]
-//! 3. The revealed secret can then be used to claim Bitcoin on the other chain
+//! SHA-256 (`sha2::Sha256`) matches Bitcoin's `OP_SHA256` and Ethereum's
+//! `sha256(secret)`, keeping the preimage consistent across all three chains.
 //!
-//! # Hash Algorithm
+//! # Lifecycle
 //!
-//! This program uses SHA256 (via `sha2::Sha256`) to match Bitcoin's HTLC
-//! hash algorithm, ensuring cross-chain compatibility.
+//! 1. [`sol_htlc::commit_for_mint`] records a commitment keyed by `token_id`. No
+//!    mint exists yet, so a cancelled commitment strands nothing.
+//! 2. [`sol_htlc::mint_with_secret`] verifies the preimage, mints exactly one
+//!    token, attaches metadata, and seals it as a Metaplex master edition so
+//!    supply is provably one, then closes the commitment.
+//! 3. [`sol_htlc::cancel_commitment`] lets the seller reclaim the commitment rent
+//!    before a mint.
 
 use anchor_lang::prelude::*;
-use anchor_lang::solana_program::system_instruction;
+use anchor_lang::system_program::{transfer, Transfer};
 use anchor_spl::associated_token::AssociatedToken;
 use anchor_spl::metadata::mpl_token_metadata::types::DataV2;
-use anchor_spl::metadata::{create_metadata_accounts_v3, CreateMetadataAccountsV3, Metadata};
+use anchor_spl::metadata::{
+    create_master_edition_v3, create_metadata_accounts_v3, CreateMasterEditionV3,
+    CreateMetadataAccountsV3, Metadata,
+};
 use anchor_spl::token::{mint_to, Mint, MintTo, Token, TokenAccount};
 use sha2::{Digest, Sha256};
 
@@ -39,19 +48,9 @@ pub const MIN_PRICE: u64 = 1;
 
 #[program]
 pub mod sol_htlc {
-
     use super::*;
 
-    /// Initializes the program state account.
-    ///
-    /// This must be called once before any commitments can be created.
-    /// The caller becomes the program authority.
-    ///
-    /// # Accounts
-    ///
-    /// * `program_state` - The PDA that stores global program state
-    /// * `authority` - The signer who will become the program authority
-    /// * `system_program` - Required for account creation
+    /// Initializes the program-state PDA once, recording the caller as authority.
     pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
         let program_state = &mut ctx.accounts.program_state;
         program_state.authority = ctx.accounts.authority.key();
@@ -65,28 +64,21 @@ pub mod sol_htlc {
         Ok(())
     }
 
-    /// Creates a commitment for future NFT minting.
+    /// Records a commitment to mint `token_id` behind `hash`.
     ///
-    /// The seller provides a SHA256 hash of a secret. A buyer who knows
-    /// the secret preimage can later call [`mint_with_secret`] to mint
-    /// the NFT and reveal the secret on-chain.
+    /// No mint account is created here; the mint is created at the reveal so a
+    /// cancellation cannot strand a mint PDA or its rent. Binding `buyer` to a
+    /// specific key restricts who may mint; `None` leaves the mint open to anyone.
     ///
     /// # Arguments
     ///
-    /// * `hash` - SHA256 hash of the secret (32 bytes)
-    /// * `token_id` - Unique identifier for this NFT
-    /// * `price` - Price in lamports the buyer must pay
-    /// * `name` - NFT name (max 32 bytes)
-    /// * `symbol` - NFT symbol (max 10 bytes)
-    /// * `uri` - Metadata URI (max 200 bytes)
-    ///
-    /// # Errors
-    ///
-    /// * [`ErrorCode::CommitmentAlreadyExists`] - Token ID already has a commitment
-    /// * [`ErrorCode::InvalidPrice`] - Price is below minimum
-    /// * [`ErrorCode::NameTooLong`] - Name exceeds maximum length
-    /// * [`ErrorCode::SymbolTooLong`] - Symbol exceeds maximum length
-    /// * [`ErrorCode::UriTooLong`] - URI exceeds maximum length
+    /// * `hash` - SHA-256 hash of the secret (32 bytes).
+    /// * `token_id` - Unique identifier for this NFT.
+    /// * `price` - Price in lamports the buyer pays the seller.
+    /// * `name` - NFT name (at most [`MAX_NAME_LEN`] bytes).
+    /// * `symbol` - NFT symbol (at most [`MAX_SYMBOL_LEN`] bytes).
+    /// * `uri` - Metadata URI (at most [`MAX_URI_LEN`] bytes).
+    /// * `buyer` - Authorized minter, or `None` for an open mint.
     pub fn commit_for_mint(
         ctx: Context<CommitForMint>,
         hash: [u8; 32],
@@ -95,6 +87,7 @@ pub mod sol_htlc {
         name: String,
         symbol: String,
         uri: String,
+        buyer: Option<Pubkey>,
     ) -> Result<()> {
         require!(name.len() <= MAX_NAME_LEN, ErrorCode::NameTooLong);
         require!(symbol.len() <= MAX_SYMBOL_LEN, ErrorCode::SymbolTooLong);
@@ -102,21 +95,14 @@ pub mod sol_htlc {
         require!(price >= MIN_PRICE, ErrorCode::InvalidPrice);
 
         let commitment = &mut ctx.accounts.commitment;
-
-        require!(
-            commitment.hash == [0u8; 32],
-            ErrorCode::CommitmentAlreadyExists
-        );
-
         commitment.hash = hash;
         commitment.token_id = token_id;
         commitment.price = price;
         commitment.seller = ctx.accounts.seller.key();
-        commitment.mint = ctx.accounts.mint.key();
+        commitment.buyer = buyer;
         commitment.name = name.clone();
         commitment.symbol = symbol.clone();
         commitment.uri = uri.clone();
-        commitment.is_used = false;
         commitment.bump = ctx.bumps.commitment;
 
         emit!(CommitmentCreated {
@@ -124,7 +110,7 @@ pub mod sol_htlc {
             token_id,
             price,
             seller: ctx.accounts.seller.key(),
-            mint: ctx.accounts.mint.key(),
+            buyer,
             name,
             symbol,
             uri,
@@ -133,58 +119,53 @@ pub mod sol_htlc {
         Ok(())
     }
 
-    /// Mints an NFT by revealing the secret that matches the commitment hash.
+    /// Reveals the secret and mints the committed token to the buyer.
     ///
-    /// The buyer provides the secret preimage, which is verified against the
-    /// committed hash. Upon successful verification:
-    /// 1. Payment is transferred from buyer to seller
-    /// 2. The NFT is minted to the buyer's associated token account
-    /// 3. Metadata is created for the NFT
-    /// 4. The secret is emitted in an event for cross-chain verification
+    /// Verifies the preimage against the commitment hash, enforces the optional
+    /// buyer binding, transfers the price to the seller, mints exactly one token,
+    /// attaches metadata, and seals it as a Metaplex master edition (`max_supply`
+    /// 0) so the mint and freeze authorities pass to the edition PDA and supply is
+    /// provably one. The commitment is closed and its rent returned to the seller;
+    /// the persistent mint PDA then bars re-minting the same `token_id`.
     ///
     /// # Arguments
     ///
-    /// * `secret` - The 32-byte secret preimage
-    /// * `token_id` - The token ID to mint
-    ///
-    /// # Errors
-    ///
-    /// * [`ErrorCode::CommitmentAlreadyUsed`] - Commitment was already fulfilled
-    /// * [`ErrorCode::TokenIdMismatch`] - Token ID doesn't match commitment
-    /// * [`ErrorCode::InvalidSecret`] - Secret hash doesn't match commitment
+    /// * `secret` - The 32-byte secret preimage.
+    /// * `token_id` - The token ID to mint (binds the commitment and mint PDAs).
     pub fn mint_with_secret(
         ctx: Context<MintWithSecret>,
         secret: [u8; 32],
         token_id: u64,
     ) -> Result<()> {
-        let commitment = &mut ctx.accounts.commitment;
+        let commitment = &ctx.accounts.commitment;
 
-        require!(!commitment.is_used, ErrorCode::CommitmentAlreadyUsed);
-        require!(commitment.token_id == token_id, ErrorCode::TokenIdMismatch);
+        if let Some(authorized) = commitment.buyer {
+            require_keys_eq!(
+                ctx.accounts.buyer.key(),
+                authorized,
+                ErrorCode::UnauthorizedBuyer
+            );
+        }
 
         let computed_hash: [u8; 32] = Sha256::digest(secret).into();
         require!(computed_hash == commitment.hash, ErrorCode::InvalidSecret);
 
-        // Transfer payment from buyer to seller
-        anchor_lang::solana_program::program::invoke(
-            &system_instruction::transfer(
-                ctx.accounts.buyer.key,
-                &commitment.seller,
-                commitment.price,
+        transfer(
+            CpiContext::new(
+                ctx.accounts.system_program.key(),
+                Transfer {
+                    from: ctx.accounts.buyer.to_account_info(),
+                    to: ctx.accounts.seller_info.to_account_info(),
+                },
             ),
-            &[
-                ctx.accounts.buyer.to_account_info(),
-                ctx.accounts.seller_info.to_account_info(),
-                ctx.accounts.system_program.to_account_info(),
-            ],
+            commitment.price,
         )?;
 
-        let program_state = &ctx.accounts.program_state;
-        let signer_seeds: &[&[&[u8]]] = &[&[b"program_state", &[program_state.bump]]];
+        let signer_seeds: &[&[&[u8]]] = &[&[b"program_state", &[ctx.accounts.program_state.bump]]];
 
         mint_to(
             CpiContext::new_with_signer(
-                ctx.accounts.token_program.to_account_info(),
+                ctx.accounts.token_program.key(),
                 MintTo {
                     mint: ctx.accounts.mint.to_account_info(),
                     to: ctx.accounts.token_account.to_account_info(),
@@ -192,18 +173,18 @@ pub mod sol_htlc {
                 },
                 signer_seeds,
             ),
-            1, // Mint exactly one NFT
+            1,
         )?;
 
         create_metadata_accounts_v3(
             CpiContext::new_with_signer(
-                ctx.accounts.metadata_program.to_account_info(),
+                ctx.accounts.metadata_program.key(),
                 CreateMetadataAccountsV3 {
                     metadata: ctx.accounts.metadata.to_account_info(),
                     mint: ctx.accounts.mint.to_account_info(),
                     mint_authority: ctx.accounts.program_state.to_account_info(),
-                    update_authority: ctx.accounts.program_state.to_account_info(),
                     payer: ctx.accounts.buyer.to_account_info(),
+                    update_authority: ctx.accounts.program_state.to_account_info(),
                     system_program: ctx.accounts.system_program.to_account_info(),
                     rent: ctx.accounts.rent.to_account_info(),
                 },
@@ -218,18 +199,37 @@ pub mod sol_htlc {
                 collection: None,
                 uses: None,
             },
-            false, // Is mutable
-            true,  // Update authority is signer
-            None,  // Collection details
+            false,
+            true,
+            None,
         )?;
 
-        commitment.is_used = true;
+        create_master_edition_v3(
+            CpiContext::new_with_signer(
+                ctx.accounts.metadata_program.key(),
+                CreateMasterEditionV3 {
+                    edition: ctx.accounts.master_edition.to_account_info(),
+                    mint: ctx.accounts.mint.to_account_info(),
+                    update_authority: ctx.accounts.program_state.to_account_info(),
+                    mint_authority: ctx.accounts.program_state.to_account_info(),
+                    payer: ctx.accounts.buyer.to_account_info(),
+                    metadata: ctx.accounts.metadata.to_account_info(),
+                    token_program: ctx.accounts.token_program.to_account_info(),
+                    system_program: ctx.accounts.system_program.to_account_info(),
+                    rent: ctx.accounts.rent.to_account_info(),
+                },
+                signer_seeds,
+            ),
+            Some(0),
+        )?;
+
         let program_state = &mut ctx.accounts.program_state;
         program_state.total_minted = program_state
             .total_minted
             .checked_add(1)
             .ok_or(ErrorCode::Overflow)?;
 
+        let commitment = &ctx.accounts.commitment;
         emit!(SecretRevealed {
             secret,
             hash: commitment.hash,
@@ -239,33 +239,21 @@ pub mod sol_htlc {
             mint: ctx.accounts.mint.key(),
             price: commitment.price,
         });
-
         emit!(NFTMinted {
             token_id,
             buyer: ctx.accounts.buyer.key(),
-            secret
+            secret,
         });
 
         Ok(())
     }
 
-    /// Allows the seller to cancel a commitment that hasn't been used.
+    /// Closes an unfulfilled commitment, returning its rent to the seller.
     ///
-    /// This closes the commitment account and returns the rent to the seller.
-    /// Can only be called by the original seller.
-    ///
-    /// # Errors
-    ///
-    /// * [`ErrorCode::Unauthorized`] - Caller is not the original seller
-    /// * [`ErrorCode::CommitmentAlreadyUsed`] - Commitment was already fulfilled
+    /// Only the original seller may cancel. No mint exists before the reveal, so
+    /// cancellation always fully recovers the committed state.
     pub fn cancel_commitment(ctx: Context<CancelCommitment>) -> Result<()> {
         let commitment = &ctx.accounts.commitment;
-
-        require!(
-            commitment.seller == ctx.accounts.seller.key(),
-            ErrorCode::Unauthorized
-        );
-        require!(!commitment.is_used, ErrorCode::CommitmentAlreadyUsed);
 
         emit!(CommitmentCancelled {
             hash: commitment.hash,
@@ -278,10 +266,8 @@ pub mod sol_htlc {
 }
 
 /// Global program state stored in a PDA.
-///
-/// This account tracks the program authority and total NFTs minted.
 #[account]
-#[derive(Default)]
+#[derive(InitSpace)]
 pub struct ProgramState {
     /// The authority who initialized the program.
     pub authority: Pubkey,
@@ -291,14 +277,14 @@ pub struct ProgramState {
     pub bump: u8,
 }
 
-/// Represents a commitment to mint an NFT in exchange for a secret reveal.
+/// A seller's pending commitment to mint a token behind a secret hash.
 ///
-/// This account is created by the seller and stores all the information
-/// needed to mint the NFT once the buyer reveals the secret.
+/// Exists only while pending: it is closed on mint or cancel, so its presence is
+/// exactly the set of open commitments.
 #[account]
-#[derive(Default)]
+#[derive(InitSpace)]
 pub struct Commitment {
-    /// SHA256 hash of the secret required to mint.
+    /// SHA-256 hash of the secret required to mint.
     pub hash: [u8; 32],
     /// Unique identifier for this NFT.
     pub token_id: u64,
@@ -306,28 +292,29 @@ pub struct Commitment {
     pub price: u64,
     /// Address of the seller who created this commitment.
     pub seller: Pubkey,
-    /// Address of the mint account for this NFT.
-    pub mint: Pubkey,
+    /// Authorized minter, or `None` for an open mint.
+    pub buyer: Option<Pubkey>,
     /// Name of the NFT.
+    #[max_len(MAX_NAME_LEN)]
     pub name: String,
     /// Symbol of the NFT.
+    #[max_len(MAX_SYMBOL_LEN)]
     pub symbol: String,
     /// Metadata URI for the NFT.
+    #[max_len(MAX_URI_LEN)]
     pub uri: String,
-    /// Whether this commitment has been fulfilled.
-    pub is_used: bool,
     /// PDA bump seed for this account.
     pub bump: u8,
 }
 
-/// Accounts required for program initialization.
+/// Accounts for program initialization.
 #[derive(Accounts)]
 pub struct Initialize<'info> {
-    /// The program state PDA to be initialized.
+    /// The program-state PDA to initialize.
     #[account(
         init,
         payer = authority,
-        space = 8 + std::mem::size_of::<ProgramState>(),
+        space = 8 + ProgramState::INIT_SPACE,
         seeds = [b"program_state"],
         bump
     )]
@@ -337,71 +324,52 @@ pub struct Initialize<'info> {
     #[account(mut)]
     pub authority: Signer<'info>,
 
-    /// The system program for account creation.
+    /// System program for account creation.
     pub system_program: Program<'info, System>,
 }
 
-/// Accounts required for creating a mint commitment.
+/// Accounts for creating a mint commitment.
 #[derive(Accounts)]
 #[instruction(hash: [u8; 32], token_id: u64)]
 pub struct CommitForMint<'info> {
-    /// The commitment PDA to store the commitment data.
+    /// The commitment PDA storing the commitment data.
     #[account(
         init,
         payer = seller,
-        space = 8 + 32 + 8 + 8 + 32 + 32 +
-                (4 + MAX_NAME_LEN) + (4 + MAX_SYMBOL_LEN) + (4 + MAX_URI_LEN) + 1 + 1,
+        space = 8 + Commitment::INIT_SPACE,
         seeds = [b"commitment", token_id.to_le_bytes().as_ref()],
         bump
     )]
     pub commitment: Account<'info, Commitment>,
-
-    /// The mint account for the NFT (0 decimals for NFT).
-    #[account(
-        init,
-        payer = seller,
-        mint::decimals = 0,
-        mint::authority = program_state,
-        mint::freeze_authority = program_state,
-        seeds = [b"mint", token_id.to_le_bytes().as_ref()],
-        bump
-    )]
-    pub mint: Account<'info, Mint>,
-
-    /// The global program state PDA.
-    #[account(
-        seeds = [b"program_state"],
-        bump = program_state.bump
-    )]
-    pub program_state: Account<'info, ProgramState>,
 
     /// The seller creating the commitment (pays for account creation).
     #[account(mut)]
     pub seller: Signer<'info>,
 
-    /// SPL Token program.
-    pub token_program: Program<'info, Token>,
     /// System program for account creation.
     pub system_program: Program<'info, System>,
-    /// Rent sysvar.
-    pub rent: Sysvar<'info, Rent>,
 }
 
-/// Accounts required for minting an NFT with secret reveal.
+/// Accounts for minting an NFT by revealing the secret.
 #[derive(Accounts)]
 #[instruction(secret: [u8; 32], token_id: u64)]
 pub struct MintWithSecret<'info> {
-    /// The commitment being fulfilled.
+    /// The commitment being fulfilled; closed to the seller on success.
     #[account(
         mut,
+        close = seller_info,
         seeds = [b"commitment", token_id.to_le_bytes().as_ref()],
         bump = commitment.bump
     )]
     pub commitment: Account<'info, Commitment>,
 
-    /// The mint account for the NFT.
+    /// The NFT mint.
     #[account(
-        mut,
+        init,
+        payer = buyer,
+        mint::decimals = 0,
+        mint::authority = program_state,
+        mint::freeze_authority = program_state,
         seeds = [b"mint", token_id.to_le_bytes().as_ref()],
         bump
     )]
@@ -416,21 +384,32 @@ pub struct MintWithSecret<'info> {
     )]
     pub token_account: Account<'info, TokenAccount>,
 
-    /// The metadata account for the NFT.
-    /// CHECK: PDA derived from metadata program and mint.
+    /// The Metaplex metadata account for the NFT.
+    /// CHECK: PDA derived and written by the Token Metadata program via CPI.
+    #[account(
+        mut,
+        seeds = [b"metadata", metadata_program.key().as_ref(), mint.key().as_ref()],
+        bump,
+        seeds::program = metadata_program.key()
+    )]
+    pub metadata: UncheckedAccount<'info>,
+
+    /// The master-edition account that enforces non-fungibility.
+    /// CHECK: PDA derived and written by the Token Metadata program via CPI.
     #[account(
         mut,
         seeds = [
             b"metadata",
             metadata_program.key().as_ref(),
             mint.key().as_ref(),
+            b"edition",
         ],
         bump,
         seeds::program = metadata_program.key()
     )]
-    pub metadata: UncheckedAccount<'info>,
+    pub master_edition: UncheckedAccount<'info>,
 
-    /// The global program state PDA.
+    /// The global program-state PDA (mint authority and mint counter).
     #[account(
         mut,
         seeds = [b"program_state"],
@@ -438,9 +417,9 @@ pub struct MintWithSecret<'info> {
     )]
     pub program_state: Account<'info, ProgramState>,
 
-    /// The seller who receives payment.
-    /// CHECK: Validated through commitment account's seller field.
-    #[account(mut)]
+    /// The seller, who receives payment and the closed commitment's rent.
+    /// CHECK: constrained to equal the commitment's recorded seller.
+    #[account(mut, constraint = seller_info.key() == commitment.seller @ ErrorCode::Unauthorized)]
     pub seller_info: UncheckedAccount<'info>,
 
     /// The buyer revealing the secret and receiving the NFT.
@@ -459,15 +438,11 @@ pub struct MintWithSecret<'info> {
     pub rent: Sysvar<'info, Rent>,
 }
 
-/// Accounts required for cancelling a commitment.
+/// Accounts for cancelling a commitment.
 #[derive(Accounts)]
 pub struct CancelCommitment<'info> {
-    /// The commitment to cancel (will be closed and rent returned).
-    #[account(
-        mut,
-        close = seller,
-        has_one = seller
-    )]
+    /// The commitment to cancel; closed and rent returned to the seller.
+    #[account(mut, close = seller, has_one = seller @ ErrorCode::Unauthorized)]
     pub commitment: Account<'info, Commitment>,
 
     /// The seller who created the commitment.
@@ -485,7 +460,7 @@ pub struct ProgramInitialized {
 /// Emitted when a new commitment is created.
 #[event]
 pub struct CommitmentCreated {
-    /// The SHA256 hash of the secret.
+    /// The SHA-256 hash of the secret.
     pub hash: [u8; 32],
     /// The token ID for the NFT.
     pub token_id: u64,
@@ -493,8 +468,8 @@ pub struct CommitmentCreated {
     pub price: u64,
     /// The seller's address.
     pub seller: Pubkey,
-    /// The mint account address.
-    pub mint: Pubkey,
+    /// The authorized minter, or `None` for an open mint.
+    pub buyer: Option<Pubkey>,
     /// The NFT name.
     pub name: String,
     /// The NFT symbol.
@@ -505,8 +480,7 @@ pub struct CommitmentCreated {
 
 /// Emitted when a secret is revealed during minting.
 ///
-/// This event is critical for cross-chain verification as it contains
-/// the revealed secret that can be used to claim Bitcoin.
+/// Carries the revealed preimage used to claim Bitcoin on the other chain.
 #[event]
 pub struct SecretRevealed {
     /// The revealed secret preimage.
@@ -550,21 +524,15 @@ pub struct CommitmentCancelled {
 /// Program error codes.
 #[error_code]
 pub enum ErrorCode {
-    /// A commitment already exists for this token ID.
-    #[msg("Commitment already exists for this hash")]
-    CommitmentAlreadyExists,
-    /// The commitment has already been fulfilled.
-    #[msg("Commitment has already been used")]
-    CommitmentAlreadyUsed,
-    /// The provided secret does not hash to the expected value.
+    /// The provided secret does not hash to the committed value.
     #[msg("Invalid secret provided")]
     InvalidSecret,
-    /// The token ID does not match the commitment.
-    #[msg("Token ID mismatch")]
-    TokenIdMismatch,
     /// The caller is not authorized to perform this action.
     #[msg("Unauthorized")]
     Unauthorized,
+    /// The caller is not the commitment's authorized buyer.
+    #[msg("Caller is not the authorized buyer")]
+    UnauthorizedBuyer,
     /// The price is below the minimum allowed.
     #[msg("Invalid price")]
     InvalidPrice,
