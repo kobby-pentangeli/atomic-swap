@@ -24,6 +24,9 @@ anchor-lang = { version = "1.0.2", features = ["init-if-needed"] }
 anchor-spl = { version = "1.0.2", features = ["metadata"] }
 sha2 = { version = "0.10", default-features = false }
 
-# Suppress cfg warnings from Anchor/Solana macro expansions (upstream issue)
+# Suppress lints triggered inside Anchor/Solana macro expansions (upstream issue)
 [lints.rust]
 unexpected_cfgs = "allow"
+
+[lints.clippy]
+diverging_sub_expression = "allow"

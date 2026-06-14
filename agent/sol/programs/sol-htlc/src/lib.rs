@@ -91,6 +91,7 @@ pub mod sol_htlc {
     /// * `symbol` - NFT symbol (at most [`MAX_SYMBOL_LEN`] bytes).
     /// * `uri` - Metadata URI (at most [`MAX_URI_LEN`] bytes).
     /// * `buyer` - Authorized minter, or `None` for an open mint.
+    #[allow(clippy::too_many_arguments)]
     pub fn commit_for_mint(
         ctx: Context<CommitForMint>,
         hash: [u8; 32],

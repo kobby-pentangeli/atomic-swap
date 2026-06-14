@@ -2,185 +2,165 @@ name: CI
 
 on:
   push:
-    branches:
-      - master
+    branches: [master]
   pull_request:
-    types: [opened, reopened, synchronize]
+    branches: [master]
 
 env:
   CARGO_TERM_COLOR: always
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  check:
-    name: cargo check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: "npm"
-          cache-dependency-path: agent/eth/package-lock.json
-
-      - name: Cache Hardhat artifacts
-        uses: actions/cache@v4
-        with:
-          path: |
-            agent/eth/artifacts
-            agent/eth/cache
-          key: hardhat-${{ hashFiles('agent/eth/contracts/**/*.sol') }}
-
-      - name: Generate contract artifacts
-        run: |
-          cd agent/eth
-          npm ci
-          npx hardhat compile
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/registry
-          key: cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Cache cargo index
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/git
-          key: cargo-index-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Cache cargo build
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: cargo-build-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: cargo check
-        run: cargo check --all-targets --all-features
-
-  test:
-    name: cargo test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: "npm"
-          cache-dependency-path: agent/eth/package-lock.json
-
-      - name: Cache Hardhat artifacts
-        uses: actions/cache@v4
-        with:
-          path: |
-            agent/eth/artifacts
-            agent/eth/cache
-          key: hardhat-${{ hashFiles('agent/eth/contracts/**/*.sol') }}
-
-      - name: Generate contract artifacts
-        run: |
-          cd agent/eth
-          npm ci
-          npx hardhat compile
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo build
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: cargo-test-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: cargo test
-        run: cargo test --all-features
-
-  clippy:
-    name: cargo clippy
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: "npm"
-          cache-dependency-path: agent/eth/package-lock.json
-
-      - name: Cache Hardhat artifacts
-        uses: actions/cache@v4
-        with:
-          path: |
-            agent/eth/artifacts
-            agent/eth/cache
-          key: hardhat-${{ hashFiles('agent/eth/contracts/**/*.sol') }}
-
-      - name: Generate contract artifacts
-        run: |
-          cd agent/eth
-          npm ci
-          npx hardhat compile
-
-      - name: Install Rust nightly with clippy
-        uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: clippy
-
-      - name: cargo clippy
-        run: cargo clippy --all-features --all-targets -- -D warnings
-
   fmt:
-    name: rustfmt (check)
+    name: rustfmt
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust nightly with rustfmt
+      - name: Install nightly rustfmt
         uses: dtolnay/rust-toolchain@nightly
         with:
           components: rustfmt
+      - run: cargo +nightly fmt --all --check
 
-      - name: rustfmt check
-        run: cargo fmt -- --check
-
-  docs:
-    name: cargo doc (check)
+  clippy:
+    name: clippy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          node-version: "22"
-          cache: "npm"
-          cache-dependency-path: agent/eth/package-lock.json
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-features --all-targets --workspace -- -D warnings
 
-      - name: Cache Hardhat artifacts
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Unit, integration, and target tests
+        run: cargo test --all-features --all-targets --workspace
+      - name: Doctests
+        run: cargo test --all-features --doc --workspace
+
+  build:
+    name: build (release)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --all-features --all-targets --workspace
+
+  docs:
+    name: docs
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: "-D warnings"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo doc --all-features --no-deps --document-private-items --workspace
+
+  # The Solana program is its own Anchor workspace, excluded from the root
+  # workspace; the litesvm harness is a further excluded crate so the SBF
+  # toolchain never parses its host-only dependencies. These host-target checks
+  # format and lint both. The SBF build and harness suite run in the dedicated
+  # job below.
+  solana-program:
+    name: solana program (host checks)
+    runs-on: ubuntu-latest
+    env:
+      PROGRAM: agent/sol/Cargo.toml
+      HARNESS: agent/sol/harness/Cargo.toml
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Install nightly rustfmt
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: agent/sol
+      - run: cargo +nightly fmt --manifest-path "$PROGRAM" --all --check
+      - run: cargo +nightly fmt --manifest-path "$HARNESS" --all --check
+      - run: cargo +stable clippy --manifest-path "$PROGRAM" --all-targets -- -D warnings
+      - run: cargo +stable clippy --manifest-path "$HARNESS" --all-targets -- -D warnings
+
+  # Builds the program to SBF and runs the harness: initialize, commit, mint
+  # through the SPL-Token and Metaplex master-edition CPI chain, cancel, the
+  # reveal-deadline expiry, and every negative path. litesvm loads the compiled
+  # `.so` (and the vendored Metaplex fixture) directly, so no validator is
+  # required. `cargo build-sbf` emits the same artifact `anchor build` does
+  # without provisioning the Anchor CLI.
+  solana-program-sbf:
+    name: solana program (sbf build + harness)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agent/sol
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: agent/sol
+      - name: Cache the Solana toolchain
         uses: actions/cache@v4
         with:
           path: |
-            agent/eth/artifacts
-            agent/eth/cache
-          key: hardhat-${{ hashFiles('agent/eth/contracts/**/*.sol') }}
-
-      - name: Generate contract artifacts
+            ~/.local/share/solana
+            ~/.cache/solana
+          key: solana-agave-v3.1.10
+      - name: Install the Agave (Solana) toolchain
         run: |
-          cd agent/eth
-          npm ci
-          npx hardhat compile
+          sh -c "$(curl -sSfL https://release.anza.xyz/v3.1.10/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+      - name: Build the SBF program
+        run: cargo build-sbf
+      - name: Harness suite (litesvm)
+        run: cargo test --manifest-path harness/Cargo.toml
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: cargo doc
-        run: cargo doc --no-deps --all-features
+  # The Ethereum agent is a Foundry project with its own Solidity toolchain and
+  # Soldeer-managed dependencies: format, build, the unit/revert/fuzz/invariant
+  # suite, and static analysis (Slither gating on high-severity findings, Aderyn
+  # as a supplementary report).
+  contracts-ethereum:
+    name: ethereum contracts (foundry)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agent/eth
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+      - name: Install Solidity dependencies
+        run: forge soldeer install
+      - name: Format check
+        run: forge fmt --check
+      - name: Build
+        run: forge build --build-info
+      - name: Test (unit, revert, fuzz, invariant)
+        run: forge test -vvv
+      - name: Static analysis (Slither)
+        uses: crytic/slither-action@v0.4.0
+        with:
+          target: agent/eth
+          slither-config: agent/eth/slither.config.json
+          fail-on: high
+          ignore-compile: true
+      - name: Static analysis (Aderyn)
+        uses: Cyfrin/aderyn-ci@v0
+        with:
+          working-directory: agent/eth
+          warn-on: high
