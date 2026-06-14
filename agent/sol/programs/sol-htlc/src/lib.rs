@@ -13,11 +13,15 @@
 //!
 //! # Lifecycle
 //!
-//! 1. [`sol_htlc::commit_for_mint`] records a commitment keyed by `token_id`. No
-//!    mint exists yet, so a cancelled commitment strands nothing.
-//! 2. [`sol_htlc::mint_with_secret`] verifies the preimage, mints exactly one
-//!    token, attaches metadata, and seals it as a Metaplex master edition so
-//!    supply is provably one, then closes the commitment.
+//! 1. [`sol_htlc::commit_for_mint`] records a commitment keyed by `token_id` and
+//!    stamps the commit time. No mint exists yet, so a cancelled commitment
+//!    strands nothing.
+//! 2. [`sol_htlc::mint_with_secret`] rejects a reveal past the commitment's
+//!    deadline ([`COMMITMENT_TIMEOUT_SECS`] after commit), verifies the preimage,
+//!    mints exactly one token, attaches metadata, and seals it as a Metaplex
+//!    master edition so supply is provably one, then closes the commitment. The
+//!    bounded reveal window is what lets the Bitcoin refund timelock be ordered
+//!    safely after it.
 //! 3. [`sol_htlc::cancel_commitment`] lets the seller reclaim the commitment rent
 //!    before a mint.
 
@@ -46,6 +50,12 @@ pub const MAX_URI_LEN: usize = 200;
 /// Minimum price in lamports (prevents zero-value commitments).
 pub const MIN_PRICE: u64 = 1;
 
+/// Window in seconds after a commitment within which the secret may be revealed
+/// to mint. Once it elapses the mint is rejected, bounding when the preimage can
+/// become public so the matching Bitcoin HTLC's refund timelock can be ordered
+/// safely after it. Matches the Ethereum contract's `COMMITMENT_TIMEOUT`.
+pub const COMMITMENT_TIMEOUT_SECS: i64 = 24 * 60 * 60;
+
 #[program]
 pub mod sol_htlc {
     use super::*;
@@ -66,9 +76,11 @@ pub mod sol_htlc {
 
     /// Records a commitment to mint `token_id` behind `hash`.
     ///
-    /// No mint account is created here; the mint is created at the reveal so a
-    /// cancellation cannot strand a mint PDA or its rent. Binding `buyer` to a
-    /// specific key restricts who may mint; `None` leaves the mint open to anyone.
+    /// Stamps the current cluster time so the reveal deadline ([`COMMITMENT_TIMEOUT_SECS`]
+    /// later) is fixed at commit. No mint account is created here; the mint is
+    /// created at the reveal so a cancellation cannot strand a mint PDA or its
+    /// rent. Binding `buyer` to a specific key restricts who may mint; `None`
+    /// leaves the mint open to anyone.
     ///
     /// # Arguments
     ///
@@ -100,6 +112,7 @@ pub mod sol_htlc {
         commitment.price = price;
         commitment.seller = ctx.accounts.seller.key();
         commitment.buyer = buyer;
+        commitment.commit_time = Clock::get()?.unix_timestamp;
         commitment.name = name.clone();
         commitment.symbol = symbol.clone();
         commitment.uri = uri.clone();
@@ -121,8 +134,10 @@ pub mod sol_htlc {
 
     /// Reveals the secret and mints the committed token to the buyer.
     ///
-    /// Verifies the preimage against the commitment hash, enforces the optional
-    /// buyer binding, transfers the price to the seller, mints exactly one token,
+    /// Rejects a reveal past the commitment's deadline ([`COMMITMENT_TIMEOUT_SECS`]
+    /// after commit), verifies the preimage against the commitment hash, enforces
+    /// the optional buyer binding, transfers the price to the seller, mints exactly
+    /// one token,
     /// attaches metadata, and seals it as a Metaplex master edition (`max_supply`
     /// 0) so the mint and freeze authorities pass to the edition PDA and supply is
     /// provably one. The commitment is closed and its rent returned to the seller;
@@ -146,6 +161,15 @@ pub mod sol_htlc {
                 ErrorCode::UnauthorizedBuyer
             );
         }
+
+        let deadline = commitment
+            .commit_time
+            .checked_add(COMMITMENT_TIMEOUT_SECS)
+            .ok_or(ErrorCode::Overflow)?;
+        require!(
+            Clock::get()?.unix_timestamp <= deadline,
+            ErrorCode::CommitmentExpired
+        );
 
         let computed_hash: [u8; 32] = Sha256::digest(secret).into();
         require!(computed_hash == commitment.hash, ErrorCode::InvalidSecret);
@@ -290,6 +314,9 @@ pub struct Commitment {
     pub token_id: u64,
     /// Price in lamports the buyer must pay.
     pub price: u64,
+    /// Cluster unix time at which the commitment was created; the reveal
+    /// deadline is this plus [`COMMITMENT_TIMEOUT_SECS`].
+    pub commit_time: i64,
     /// Address of the seller who created this commitment.
     pub seller: Pubkey,
     /// Authorized minter, or `None` for an open mint.
@@ -548,4 +575,7 @@ pub enum ErrorCode {
     /// An arithmetic overflow occurred.
     #[msg("Arithmetic overflow")]
     Overflow,
+    /// The commitment's reveal window has elapsed.
+    #[msg("Commitment reveal window has expired")]
+    CommitmentExpired,
 }

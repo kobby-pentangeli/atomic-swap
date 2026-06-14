@@ -18,6 +18,7 @@ use litesvm::types::{FailedTransactionMetadata, TransactionMetadata};
 use litesvm::LiteSVM;
 use sha2::{Digest, Sha256};
 use sol_htlc::{Commitment, ProgramState};
+use solana_sdk::clock::Clock;
 use solana_sdk::instruction::{Instruction, InstructionError};
 use solana_sdk::native_token::LAMPORTS_PER_SOL;
 use solana_sdk::pubkey::Pubkey;
@@ -43,6 +44,7 @@ mod err {
     pub const UNAUTHORIZED_BUYER: u32 = 6002;
     pub const INVALID_PRICE: u32 = 6003;
     pub const URI_TOO_LONG: u32 = 6006;
+    pub const COMMITMENT_EXPIRED: u32 = 6008;
 }
 
 struct Env {
@@ -263,6 +265,7 @@ fn commit_stores_fields() {
     initialize(&mut env);
     let seller = env.seller.insecure_clone();
     let secret = [9u8; 32];
+    let before = env.svm.get_sysvar::<Clock>().unix_timestamp;
 
     send(
         &mut env,
@@ -288,6 +291,10 @@ fn commit_stores_fields() {
     assert_eq!(c.seller, seller.pubkey());
     assert_eq!(c.buyer, None);
     assert_eq!(c.name, NAME);
+    assert!(
+        c.commit_time >= before,
+        "commit time is stamped from the clock"
+    );
 }
 
 #[test]
@@ -504,6 +511,43 @@ fn mint_rejects_unauthorized_buyer() {
         &[&buyer],
     );
     assert_eq!(custom_error(&res), Some(err::UNAUTHORIZED_BUYER));
+}
+
+#[test]
+fn mint_rejects_after_expiry() {
+    let mut env = setup();
+    initialize(&mut env);
+    let seller = env.seller.insecure_clone();
+    let buyer = env.buyer.insecure_clone();
+    let secret = [4u8; 32];
+    send(
+        &mut env,
+        &[ix_commit(
+            &seller.pubkey(),
+            hash(&secret),
+            TOKEN_ID,
+            PRICE,
+            NAME,
+            SYMBOL,
+            URI,
+            None,
+        )],
+        &seller,
+        &[&seller],
+    )
+    .expect("commit");
+
+    let mut clock = env.svm.get_sysvar::<Clock>();
+    clock.unix_timestamp += sol_htlc::COMMITMENT_TIMEOUT_SECS + 1;
+    env.svm.set_sysvar::<Clock>(&clock);
+
+    let res = send(
+        &mut env,
+        &[ix_mint(&buyer.pubkey(), &seller.pubkey(), secret, TOKEN_ID)],
+        &buyer,
+        &[&buyer],
+    );
+    assert_eq!(custom_error(&res), Some(err::COMMITMENT_EXPIRED));
 }
 
 #[test]

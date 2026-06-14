@@ -26,6 +26,7 @@ pub mod btc;
 pub mod eth;
 pub mod execute;
 pub mod sol;
+pub mod timelock;
 pub mod types;
 pub mod utils;
 
@@ -83,7 +84,8 @@ enum Commands {
         #[arg(long, env = "BTC_AMOUNT", default_value = "100000")]
         btc_amount: u64,
         /// HTLC timeout as a relative window in blocks from the current chain tip
-        #[arg(long, env = "HTLC_TIMEOUT", default_value = "144")]
+        /// (must be large enough to keep the cross-chain swap atomic)
+        #[arg(long, env = "HTLC_TIMEOUT", default_value = "288")]
         timeout: u32,
         /// File path to securely write the generated secret
         #[arg(long)]
@@ -137,6 +139,11 @@ enum Commands {
         /// Secret hash from buyer's Bitcoin lock (hex)
         #[arg(long)]
         secret_hash: String,
+        /// Buyer's Bitcoin refund deadline as a unix timestamp (from lock-btc's
+        /// output); when set, the commit is refused unless the seller can still
+        /// safely claim Bitcoin after revealing the secret
+        #[arg(long)]
+        btc_refund_deadline: Option<i64>,
         /// Token ID to commit for minting
         #[arg(long, env = "TOKEN_ID")]
         token_id: Option<u64>,
@@ -344,6 +351,8 @@ async fn main() -> Result<()> {
             timeout,
             secret_output,
         } => {
+            timelock::validate_btc_lock_window(timeout)?;
+
             let args = LockBtcArgs {
                 btc_rpc,
                 btc_user,
@@ -375,6 +384,7 @@ async fn main() -> Result<()> {
             symbol,
             sol_buyer,
             secret_hash,
+            btc_refund_deadline,
             token_id,
             nft_price,
             metadata_uri,
@@ -386,6 +396,14 @@ async fn main() -> Result<()> {
             let secret_hash = utils::decode_hex_hash(&secret_hash, "secret hash")?;
             let token_id = require(token_id, "token_id", "TOKEN_ID")?;
             let metadata_uri = require(metadata_uri, "metadata_uri", "METADATA_URI")?;
+
+            if let Some(deadline) = btc_refund_deadline {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)?
+                    .as_secs();
+                let now = i64::try_from(now).context("System clock is before the Unix epoch")?;
+                timelock::validate_commit_window(now, deadline)?;
+            }
 
             let args = match chain {
                 Chain::Ethereum => CommitForMintArgs::Ethereum(EthCommitArgs {

@@ -26,7 +26,7 @@ use crate::types::{
     CancelCommitArgs, CancelResult, ClaimBtcArgs, ClaimBtcResult, CommitForMintArgs, CommitResult,
     LockBtcArgs, LockBtcResult, MintResult, MintWithSecretArgs, RefundBtcArgs, RefundBtcResult,
 };
-use crate::{eth, sol, utils};
+use crate::{eth, sol, timelock, utils};
 
 /// Locks Bitcoin in an HTLC contract.
 ///
@@ -100,6 +100,14 @@ pub fn lock_bitcoin(args: LockBtcArgs) -> Result<LockBtcResult> {
     )?;
     debug!(path = %secret_file.display(), "Secret written to file");
 
+    let now_unix = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs(),
+    )
+    .context("System clock is before the Unix epoch")?;
+    let btc_refund_deadline = timelock::btc_refund_deadline_unix(now_unix, args.timeout)?;
+
     Ok(LockBtcResult {
         txid: lock_txid.to_string(),
         htlc_address: htlc_address.to_string(),
@@ -109,6 +117,7 @@ pub fn lock_bitcoin(args: LockBtcArgs) -> Result<LockBtcResult> {
         secret_file: secret_file.display().to_string(),
         timeout_window: args.timeout,
         timeout_height,
+        btc_refund_deadline,
     })
 }
 

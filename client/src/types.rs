@@ -353,6 +353,7 @@ pub struct LockBtcResult {
     pub secret_file: String,
     pub timeout_window: u32,
     pub timeout_height: u32,
+    pub btc_refund_deadline: i64,
 }
 
 impl Printable for LockBtcResult {
@@ -374,11 +375,15 @@ impl Printable for LockBtcResult {
                 self.timeout_window, self.timeout_height
             ),
         );
+        print_field(
+            "Refund deadline:",
+            &format!("{} (unix; share with the seller)", self.btc_refund_deadline),
+        );
         println!();
         print_status(
             Color::Yellow,
             "Next:",
-            "Share the secret hash with the seller to proceed.",
+            "Share the secret hash and refund deadline with the seller to proceed.",
         );
     }
 }
