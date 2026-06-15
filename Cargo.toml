@@ -1,5 +1,5 @@
 [workspace]
-members = ["agent/btc", "client"]
+members = ["agent/btc", "client", "e2e"]
 exclude = ["agent/sol"]
 resolver = "3"
 
