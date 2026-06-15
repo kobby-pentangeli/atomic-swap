@@ -164,3 +164,41 @@ jobs:
         with:
           working-directory: agent/eth
           warn-on: high
+
+  # Drives the real client through the full swap lifecycle against ephemeral
+  # local chains (bitcoind regtest, anvil, solana-test-validator): the happy path
+  # on each NFT chain, the refund/cancel recovery paths, and every defection path.
+  # The tests are `#[ignore]`d so the other jobs only compile them; this job runs
+  # them with `--ignored`. It needs all four toolchains, so it builds the client
+  # and the SBF program once and reuses the cached Agave toolchain.
+  e2e:
+    name: end-to-end swap matrix
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+      - name: Cache the Solana toolchain
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.local/share/solana
+            ~/.cache/solana
+          key: solana-agave-v3.1.10
+      - name: Install the Agave (Solana) toolchain
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/v3.1.10/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+      - name: Install Bitcoin Core
+        run: ./scripts/setup.sh --bitcoin
+      - name: Install Solidity dependencies
+        working-directory: agent/eth
+        run: forge soldeer install
+      - name: Build the client and the SBF program
+        run: |
+          cargo build -p client
+          (cd agent/sol && cargo build-sbf)
+      - name: Swap matrix (both NFT chains, recovery and adversarial paths)
+        run: cargo test -p e2e -- --ignored
