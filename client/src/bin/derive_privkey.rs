@@ -1,6 +1,8 @@
 //! Derives a child private key from a BIP-32 extended private key and a
-//! derivation path, printing it in hex. Used by the test-account setup script
-//! to turn a wallet's xpriv into the raw key the swap CLI consumes.
+//! derivation path, printing it in hex. Hex is the form the swap CLI's Bitcoin
+//! key flags (`--buyer-btc-key`/`--seller-btc-key`) accept, so a deployment
+//! whose key lives in an HD wallet can turn its xpriv into the exact child key
+//! the client consumes.
 
 use std::str::FromStr;
 
