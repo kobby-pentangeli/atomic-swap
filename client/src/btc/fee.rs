@@ -1,80 +1,74 @@
 use anyhow::{Result, anyhow};
-use bitcoin::{Amount, TxOut};
+use bitcoin::transaction::{InputWeightPrediction, predict_weight};
+use bitcoin::{Amount, FeeRate};
 use bitcoincore_rpc::{Client as RpcClient, RpcApi};
+use btc_htlc::{Contract as BtcContract, HtlcCondition};
 
 /// Dust threshold for Bitcoin outputs.
 pub(super) const DUST_THRESHOLD: Amount = Amount::from_sat(546);
 
-/// Default fee rate fallback (sat/vB) when estimation fails.
-const FALLBACK_FEE_RATE: f64 = 10.0;
+/// Confirmation target, in blocks, for the smart-fee estimate.
+const CONFIRMATION_TARGET: u16 = 6;
 
-/// Get the current network fee rate in sat/vB.
+/// Conservative fee rate used when the node cannot produce an estimate (e.g. on
+/// regtest, which has no fee history).
+const FALLBACK_FEE_RATE: FeeRate = FeeRate::from_sat_per_vb_unchecked(10);
+
+/// Current network fee rate.
 ///
-/// Attempts to get a smart fee estimate for 6-block confirmation.
-/// Falls back to a default rate if estimation fails.
-pub fn get_fee_rate(rpc: &RpcClient) -> Result<f64> {
-    rpc.estimate_smart_fee(6, None)
+/// `estimatesmartfee` reports BTC per 1000 vbytes, which is satoshis per kvB once
+/// taken as an integer; one vbyte is four weight units, so dividing by four
+/// yields satoshis per kilo-weight-unit, the unit [`FeeRate`] stores. Falls back
+/// to [`FALLBACK_FEE_RATE`] when no estimate is available.
+pub fn fee_rate(rpc: &RpcClient) -> FeeRate {
+    rpc.estimate_smart_fee(CONFIRMATION_TARGET, None)
         .ok()
-        .and_then(|result| result.fee_rate)
-        .map(|rate| rate.to_btc() * 100_000_000.0)
-        .or_else(|| {
-            tracing::warn!("Fee estimation failed, using fallback rate");
-            Some(FALLBACK_FEE_RATE)
+        .and_then(|estimate| estimate.fee_rate)
+        .map(|per_kvb| FeeRate::from_sat_per_kwu(per_kvb.to_sat().div_ceil(4)))
+        .filter(|rate| *rate > FeeRate::ZERO)
+        .unwrap_or_else(|| {
+            tracing::warn!("Fee estimation unavailable, using fallback rate");
+            FALLBACK_FEE_RATE
         })
-        .ok_or_else(|| anyhow!("Fee rate unavailable"))
 }
 
-/// Estimate fee for HTLC funding transaction.
-pub fn estimate_fee_for_htlc_funding(
-    rpc: &RpcClient,
-    inputs: usize,
-    outputs: usize,
+/// Absolute fee for a P2WPKH-funded transaction with the given inputs and output
+/// scripts, derived from the predicted segwit weight.
+pub fn funding_fee(
+    rate: FeeRate,
+    num_inputs: usize,
+    output_script_lens: &[usize],
 ) -> Result<Amount> {
-    get_fee_rate(rpc).map(|rate| {
-        let vbytes = 11 + (inputs * 68) + (outputs * 43);
-        Amount::from_sat((vbytes as f64 * rate).ceil() as u64)
-    })
+    let weight = predict_weight(
+        std::iter::repeat_n(InputWeightPrediction::P2WPKH_MAX, num_inputs),
+        output_script_lens.iter().copied(),
+    );
+    rate.checked_mul_by_weight(weight)
+        .ok_or_else(|| anyhow!("Funding fee calculation overflowed"))
 }
 
-/// Estimate fee for HTLC claim transaction.
-pub fn estimate_fee_for_htlc_claim(rpc: &RpcClient) -> Result<Amount> {
-    get_fee_rate(rpc).map(|rate| {
-        let vbytes = 11 + 150 + 31; // HTLC claim includes script + secret
-        Amount::from_sat((vbytes as f64 * rate).ceil() as u64)
-    })
+/// Absolute fee for spending a single HTLC output under `cond` to an output with
+/// `dst_script_len`-byte script, derived from the contract's own witness
+/// prediction so the estimate tracks the real spend.
+pub fn htlc_spend_fee(
+    rate: FeeRate,
+    contract: &BtcContract,
+    cond: &HtlcCondition,
+    dst_script_len: usize,
+) -> Result<Amount> {
+    let weight = predict_weight([contract.predict_input_weight(cond)], [dst_script_len]);
+    rate.checked_mul_by_weight(weight)
+        .ok_or_else(|| anyhow!("Spend fee calculation overflowed"))
 }
 
-/// Estimate fee for HTLC timeout transaction.
-pub fn estimate_fee_for_htlc_timeout(rpc: &RpcClient) -> Result<Amount> {
-    get_fee_rate(rpc).map(|rate| {
-        let vbytes = 11 + 120 + 31; // HTLC timeout is smaller than claim
-        Amount::from_sat((vbytes as f64 * rate).ceil() as u64)
-    })
-}
-
-/// Calculate claim amount after fees.
-pub fn calculate_claim_amount(rpc: &RpcClient, output: &TxOut) -> Result<(Amount, Amount)> {
-    let fee = estimate_fee_for_htlc_claim(rpc)?;
-    validate_amount_after_fee(output.value, fee)
-}
-
-/// Calculate timeout refund amount after fees.
-pub fn calculate_timeout_amount(rpc: &RpcClient, output: &TxOut) -> Result<(Amount, Amount)> {
-    let fee = estimate_fee_for_htlc_timeout(rpc)?;
-    validate_amount_after_fee(output.value, fee)
-}
-
-/// Verify that amount is sufficient after fee deduction.
-fn validate_amount_after_fee(amount: Amount, fee: Amount) -> Result<(Amount, Amount)> {
-    let net_amount = amount
+/// Deducts `fee` from `value`, rejecting results that cannot cover the fee or
+/// that fall to or below the dust threshold.
+pub fn net_after_fee(value: Amount, fee: Amount) -> Result<Amount> {
+    let net = value
         .checked_sub(fee)
-        .ok_or_else(|| anyhow!("Amount {amount} insufficient to cover fee {fee}"))?;
+        .ok_or_else(|| anyhow!("Amount {value} insufficient to cover fee {fee}"))?;
 
-    if net_amount <= DUST_THRESHOLD {
-        return Err(anyhow!(
-            "Amount {net_amount} below dust threshold after {fee} fee",
-        ));
-    }
-
-    Ok((net_amount, fee))
+    (net > DUST_THRESHOLD)
+        .then_some(net)
+        .ok_or_else(|| anyhow!("Amount {net} below dust threshold after {fee} fee"))
 }

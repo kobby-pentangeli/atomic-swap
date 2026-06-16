@@ -23,6 +23,18 @@ Contributions via pull requests are much appreciated. Before sending a pull requ
 2. You check existing open, and recently merged, pull requests to make sure someone else hasn't addressed the problem already.
 3. Furthermore, you open an issue to discuss any significant work.
 
+The [Development Guide](docs/development.md) covers the workspace layout, the pinned toolchains (installed by `scripts/setup.sh`), and how to run the end-to-end suite. Before opening a pull request, run the following checks from the repository root:
+
+```bash
+cargo +nightly fmt
+cargo clippy --all-features --all-targets --workspace -- -D warnings
+cargo build --release --all-features --all-targets
+cargo doc --all-features --no-deps --document-private-items --workspace
+cargo test --all-features --all-targets --workspace
+```
+
+The Solana program and the Ethereum contract carry their own suites, also described in the guide.
+
 To send a pull request, please:
 
 1. Fork the repository.

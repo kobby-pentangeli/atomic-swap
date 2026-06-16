@@ -1,10 +1,13 @@
 [package]
 name = "client"
-version = "0.2.0"
 description = "Client for cross-chain atomic swaps"
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/kobby-pentangeli/atomic-swap"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
 default-run = "client"
 
 [[bin]]
@@ -16,29 +19,30 @@ name = "derive_privkey"
 path = "src/bin/derive_privkey.rs"
 
 [dependencies]
-btc-htlc = { path = "../agent/btc" }
+btc-htlc = { workspace = true }
 sol-htlc = { path = "../agent/sol/programs/sol-htlc", features = [
     "no-entrypoint",
 ] }
 
+anyhow = { workspace = true }
+bitcoin = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }
 sha2 = { workspace = true }
 
-anyhow = "1.0"
-crossterm = "0.29"
-bitcoin = { version = "0.32", features = ["serde", "rand"] }
-bitcoincore-rpc = "0.19"
-clap = { version = "4.0", features = ["derive", "env"] }
-dotenvy = "0.15"
-ethers = "2.0"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-tokio = { version = "1.0", features = ["full"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-
-anchor-client = "0.32.1"
-anchor-lang = "0.32.1"
-anchor-spl = { version = "0.32.1", features = ["metadata"] }
-solana-client = "3.0.0"
+alloy = { workspace = true }
+anchor-client = { workspace = true }
+anchor-lang = { workspace = true }
+anchor-spl = { workspace = true }
+bitcoincore-rpc = { workspace = true }
+clap = { workspace = true }
+crossterm = { workspace = true }
+dotenvy = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+solana-client = { workspace = true }
+solana-sdk = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+url = { workspace = true }

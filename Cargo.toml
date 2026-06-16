@@ -1,16 +1,45 @@
 [workspace]
-members = ["agent/btc", "agent/sol/programs/*", "client"]
-
+members = ["agent/btc", "client", "e2e"]
+exclude = ["agent/sol"]
 resolver = "3"
 
+[workspace.package]
+version = "0.3.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/kobby-pentangeli/atomic-swap"
+homepage = "https://github.com/kobby-pentangeli/atomic-swap"
+
 [workspace.dependencies]
+# Internal crates
+btc-htlc = { path = "agent/btc", version = "0.3.0" }
+
+# Third-party dependencies shared by more than one member
+anyhow = "1"
+bitcoin = { version = "0.32", features = ["serde", "rand"] }
 hex = "0.4"
-sha2 = "0.10"
 rand = "0.8"
+sha2 = "0.10"
+thiserror = "2"
 
-# https://github.com/briansmith/ring/discussions/2450
-# ring = "0.17"
-
+# Third-party dependencies used by the client
+alloy = { version = "2.0.5", features = ["signer-local"] }
+anchor-client = "1.0.2"
+anchor-lang = "1.0.2"
+anchor-spl = { version = "1.0.2", features = ["metadata"] }
+bitcoincore-rpc = "0.19"
+clap = { version = "4", features = ["derive", "env"] }
+crossterm = "0.29"
+dotenvy = "0.15"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+solana-client = "3.1"
+solana-sdk = "3"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+url = { version = "2.5", features = ["std"] }
 
 [profile.release]
 overflow-checks = true

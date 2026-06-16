@@ -23,11 +23,10 @@ use utils::{DEFAULT_SECRETS_DIR, DEFAULT_SECRETS_FILE};
 
 use crate::btc::BtcClient;
 use crate::types::{
-    CancelCommitArgs, CancelResult, Chain, ClaimBtcArgs, ClaimBtcResult, CommitForMintArgs,
-    CommitResult, LockBtcArgs, LockBtcResult, MintResult, MintWithSecretArgs, RefundBtcArgs,
-    RefundBtcResult,
+    CancelCommitArgs, CancelResult, ClaimBtcArgs, ClaimBtcResult, CommitForMintArgs, CommitResult,
+    LockBtcArgs, LockBtcResult, MintResult, MintWithSecretArgs, RefundBtcArgs, RefundBtcResult,
 };
-use crate::{eth, sol, utils};
+use crate::{eth, sol, timelock, utils};
 
 /// Locks Bitcoin in an HTLC contract.
 ///
@@ -45,27 +44,35 @@ pub fn lock_bitcoin(args: LockBtcArgs) -> Result<LockBtcResult> {
     let secret_bytes = btc_htlc::hex_to_secret(&r_secret_hex)?;
     let secret_hash = btc_htlc::hash_secret(&secret_bytes);
 
-    let contract_params = HtlcParams {
+    let auth = Auth::UserPass(args.btc_user.clone(), args.btc_pass.clone());
+    let btc_client = BtcClient::new(&args.btc_rpc, auth, args.btc_network, buyer_keypair)
+        .context("Failed to initialize Bitcoin client")?;
+
+    let current_height = btc_client.block_height()?;
+    let timeout_height = u32::try_from(
+        current_height
+            .checked_add(u64::from(args.timeout))
+            .ok_or_else(|| anyhow!("Timeout window overflows the chain height"))?,
+    )
+    .context("Resolved timeout height exceeds the protocol maximum")?;
+
+    let btc_contract = BtcContract::new(HtlcParams {
         secret_hash,
         seller: seller_pubkey,
         buyer: buyer_pubkey,
-        timeout: args.timeout,
+        timeout: timeout_height,
         network: args.btc_network,
-    };
-    let btc_contract = BtcContract::new(contract_params);
+    });
     let htlc_address = btc_contract.address();
 
     debug!(
         htlc_address = %htlc_address,
         seller_pubkey = %seller_pubkey,
         buyer_pubkey = %buyer_pubkey,
-        timeout_blocks = %args.timeout,
+        timeout_window = %args.timeout,
+        timeout_height = %timeout_height,
         "Created HTLC contract"
     );
-
-    let auth = Auth::UserPass(args.btc_user.clone(), args.btc_pass.clone());
-    let btc_client = BtcClient::new(&args.btc_rpc, auth, args.btc_network, buyer_keypair)
-        .context("Failed to initialize Bitcoin client")?;
 
     debug!("Initiating Bitcoin lock transaction");
     let amount = Amount::from_sat(args.btc_amount);
@@ -77,17 +84,29 @@ pub fn lock_bitcoin(args: LockBtcArgs) -> Result<LockBtcResult> {
     debug!(
         txid = %lock_txid,
         amount_btc = %amount.to_btc(),
-        htlc_address = %btc_contract.address(),
+        htlc_address = %htlc_address,
         "Bitcoin funds locked successfully"
     );
-
-    debug!(secret = %hex::encode(secret_bytes), "Generated secret");
 
     let secret_file = args
         .secret_output_file
         .unwrap_or_else(|| PathBuf::from(DEFAULT_SECRETS_DIR).join(DEFAULT_SECRETS_FILE));
-    utils::write_secret_to_file(&secret_file, &secret_bytes, &secret_hash, &lock_txid)?;
+    utils::write_secret_to_file(
+        &secret_file,
+        &secret_bytes,
+        &secret_hash,
+        &lock_txid,
+        timeout_height,
+    )?;
     debug!(path = %secret_file.display(), "Secret written to file");
+
+    let now_unix = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs(),
+    )
+    .context("System clock is before the Unix epoch")?;
+    let btc_refund_deadline = timelock::btc_refund_deadline_unix(now_unix, args.timeout)?;
 
     Ok(LockBtcResult {
         txid: lock_txid.to_string(),
@@ -96,7 +115,9 @@ pub fn lock_bitcoin(args: LockBtcArgs) -> Result<LockBtcResult> {
         amount_btc: amount.to_btc(),
         secret_hash: hex::encode(secret_hash),
         secret_file: secret_file.display().to_string(),
-        timeout_blocks: args.timeout,
+        timeout_window: args.timeout,
+        timeout_height,
+        btc_refund_deadline,
     })
 }
 
@@ -106,9 +127,11 @@ pub fn lock_bitcoin(args: LockBtcArgs) -> Result<LockBtcResult> {
 /// commits to minting an NFT using the same secret hash. The NFT can only be
 /// minted by revealing the secret.
 pub async fn commit_for_mint(args: CommitForMintArgs) -> Result<CommitResult> {
-    match args.chain {
-        Chain::Ethereum => eth::commit_for_mint(args).await,
-        Chain::Solana => tokio::task::spawn_blocking(move || sol::commit_for_mint(args)).await?,
+    match args {
+        CommitForMintArgs::Ethereum(a) => eth::commit_for_mint(a).await,
+        CommitForMintArgs::Solana(a) => {
+            tokio::task::spawn_blocking(move || sol::commit_for_mint(a)).await?
+        }
     }
 }
 
@@ -118,9 +141,11 @@ pub async fn commit_for_mint(args: CommitForMintArgs) -> Result<CommitResult> {
 /// the NFT. Once the secret is revealed on-chain, the seller can use it to
 /// claim the locked Bitcoin.
 pub async fn mint_with_secret(args: MintWithSecretArgs) -> Result<MintResult> {
-    match args.chain {
-        Chain::Ethereum => eth::mint_with_secret(args).await,
-        Chain::Solana => tokio::task::spawn_blocking(move || sol::mint_with_secret(args)).await?,
+    match args {
+        MintWithSecretArgs::Ethereum(a) => eth::mint_with_secret(a).await,
+        MintWithSecretArgs::Solana(a) => {
+            tokio::task::spawn_blocking(move || sol::mint_with_secret(a)).await?
+        }
     }
 }
 
@@ -219,9 +244,11 @@ pub fn claim_bitcoin(args: ClaimBtcArgs) -> Result<ClaimBtcResult> {
 /// On Ethereum, only the seller can cancel before timeout; after timeout, anyone
 /// can cancel. On Solana, only the seller can cancel.
 pub async fn cancel_commitment(args: CancelCommitArgs) -> Result<CancelResult> {
-    match args.chain {
-        Chain::Ethereum => eth::cancel_commitment(args).await,
-        Chain::Solana => tokio::task::spawn_blocking(move || sol::cancel_commitment(args)).await?,
+    match args {
+        CancelCommitArgs::Ethereum(a) => eth::cancel_commitment(a).await,
+        CancelCommitArgs::Solana(a) => {
+            tokio::task::spawn_blocking(move || sol::cancel_commitment(a)).await?
+        }
     }
 }
 
@@ -250,13 +277,13 @@ pub fn refund_bitcoin(args: RefundBtcArgs) -> Result<RefundBtcResult> {
     let buyer_pubkey = PublicKey::from(buyer_keypair.public_key());
     let seller_pubkey = utils::validate_btc_pubkey(&args.seller_btc_pubkey, "seller")?;
 
-    let (_, secret_hash, lock_txid) = utils::parse_secret_file(&args.secret_file)?;
+    let (_, secret_hash, lock_txid, timeout_height) = utils::parse_secret_file(&args.secret_file)?;
 
     let contract_params = HtlcParams {
         secret_hash,
         seller: seller_pubkey,
         buyer: buyer_pubkey,
-        timeout: args.timeout,
+        timeout: timeout_height,
         network: args.btc_network,
     };
     let btc_contract = BtcContract::new(contract_params);

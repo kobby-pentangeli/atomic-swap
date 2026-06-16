@@ -26,12 +26,14 @@ pub mod btc;
 pub mod eth;
 pub mod execute;
 pub mod sol;
+pub mod timelock;
 pub mod types;
 pub mod utils;
 
 use types::{
-    CancelCommitArgs, Chain, ClaimBtcArgs, CommitForMintArgs, LockBtcArgs, MintWithSecretArgs,
-    Printable, RefundBtcArgs, ResultFmt,
+    CancelCommitArgs, Chain, ClaimBtcArgs, CommitForMintArgs, EthCancelArgs, EthCommitArgs,
+    EthMintArgs, LockBtcArgs, MintWithSecretArgs, Printable, RefundBtcArgs, ResultFmt,
+    SolCancelArgs, SolCommitArgs, SolMintArgs,
 };
 
 const DEFAULT_BTC_RPC_URL: &str = "http://localhost:18443";
@@ -81,8 +83,9 @@ enum Commands {
         /// Amount of Bitcoin to lock (in satoshis)
         #[arg(long, env = "BTC_AMOUNT", default_value = "100000")]
         btc_amount: u64,
-        /// HTLC timeout in blocks
-        #[arg(long, env = "HTLC_TIMEOUT", default_value = "144")]
+        /// HTLC timeout as a relative window in blocks from the current chain tip
+        /// (must be large enough to keep the cross-chain swap atomic)
+        #[arg(long, env = "HTLC_TIMEOUT", default_value = "288")]
         timeout: u32,
         /// File path to securely write the generated secret
         #[arg(long)]
@@ -128,11 +131,19 @@ enum Commands {
         /// NFT symbol
         #[arg(long, env = "NFT_SYMBOL")]
         symbol: Option<String>,
+        /// Authorized buyer's Solana pubkey (base58, for restricted minting)
+        #[arg(long)]
+        sol_buyer: Option<String>,
 
         // Common fields
         /// Secret hash from buyer's Bitcoin lock (hex)
         #[arg(long)]
         secret_hash: String,
+        /// Buyer's Bitcoin refund deadline as a unix timestamp (from lock-btc's
+        /// output); when set, the commit is refused unless the seller can still
+        /// safely claim Bitcoin after revealing the secret
+        #[arg(long)]
+        btc_refund_deadline: Option<i64>,
         /// Token ID to commit for minting
         #[arg(long, env = "TOKEN_ID")]
         token_id: Option<u64>,
@@ -222,9 +233,9 @@ enum Commands {
         /// Output index in the lock transaction
         #[arg(long, default_value = "0")]
         lock_vout: u32,
-        /// HTLC timeout in blocks
-        #[arg(long, env = "HTLC_TIMEOUT", default_value = "144")]
-        timeout: u32,
+        /// Absolute HTLC timeout height (read from --secret-file when provided)
+        #[arg(long, env = "HTLC_TIMEOUT")]
+        timeout: Option<u32>,
         /// Destination address for claimed Bitcoin
         #[arg(long)]
         destination: Option<String>,
@@ -293,9 +304,6 @@ enum Commands {
         /// Output index in the lock transaction
         #[arg(long, default_value = "0")]
         lock_vout: u32,
-        /// HTLC timeout in blocks
-        #[arg(long, env = "HTLC_TIMEOUT", default_value = "144")]
-        timeout: u32,
         /// Destination address for refunded Bitcoin
         #[arg(long)]
         destination: Option<String>,
@@ -343,6 +351,8 @@ async fn main() -> Result<()> {
             timeout,
             secret_output,
         } => {
+            timelock::validate_btc_lock_window(timeout)?;
+
             let args = LockBtcArgs {
                 btc_rpc,
                 btc_user,
@@ -372,7 +382,9 @@ async fn main() -> Result<()> {
             program_id,
             name,
             symbol,
+            sol_buyer,
             secret_hash,
+            btc_refund_deadline,
             token_id,
             nft_price,
             metadata_uri,
@@ -381,69 +393,64 @@ async fn main() -> Result<()> {
                 .parse::<Chain>()
                 .context("Invalid chain specification")?;
 
-            let (token_id, nft_price, metadata_uri) = match &chain {
-                Chain::Ethereum => {
-                    require(
-                        seller_eth_key.as_ref(),
+            let secret_hash = utils::decode_hex_hash(&secret_hash, "secret hash")?;
+            let token_id = require(token_id, "token_id", "TOKEN_ID")?;
+            let metadata_uri = require(metadata_uri, "metadata_uri", "METADATA_URI")?;
+
+            if let Some(deadline) = btc_refund_deadline {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)?
+                    .as_secs();
+                let now = i64::try_from(now).context("System clock is before the Unix epoch")?;
+                timelock::validate_commit_window(now, deadline)?;
+            }
+
+            let args = match chain {
+                Chain::Ethereum => CommitForMintArgs::Ethereum(EthCommitArgs {
+                    eth_rpc: require(eth_rpc, "eth_rpc", "ETH_RPC_URL")?,
+                    seller_eth_key: require(
+                        seller_eth_key,
                         "seller_eth_key",
                         "SELLER_ETH_PRIVKEY",
-                    )?;
-                    require(
-                        nft_contract.as_ref(),
-                        "nft_contract",
-                        "NFT_CONTRACT_ADDRESS",
-                    )?;
-                    (
-                        require(token_id, "token_id", "TOKEN_ID")?,
-                        require(nft_price, "nft_price", "ETH_NFT_PRICE")?,
-                        require(metadata_uri, "metadata_uri", "METADATA_URI")?,
-                    )
-                }
-                Chain::Solana => {
-                    require(
-                        seller_sol_keypair.as_ref(),
+                    )?,
+                    nft_contract: require(nft_contract, "nft_contract", "NFT_CONTRACT_ADDRESS")?
+                        .parse()
+                        .context("Invalid NFT contract address")?,
+                    buyer: buyer_address
+                        .map(|s| s.parse())
+                        .transpose()
+                        .context("Invalid buyer address")?,
+                    secret_hash,
+                    token_id,
+                    price: require(nft_price, "nft_price", "ETH_NFT_PRICE")?,
+                    metadata_uri,
+                }),
+                Chain::Solana => CommitForMintArgs::Solana(SolCommitArgs {
+                    sol_rpc: require(sol_rpc, "sol_rpc", "SOL_RPC_URL")?,
+                    sol_ws: require(sol_ws, "sol_ws", "SOL_WS_URL")?,
+                    seller_sol_keypair: require(
+                        seller_sol_keypair,
                         "seller_sol_keypair",
                         "SELLER_SOL_KEYPAIR",
-                    )?;
-                    require(program_id.as_ref(), "program_id", "SOL_PROGRAM_ID")?;
-                    require(name.as_ref(), "name", "NFT_NAME")?;
-                    require(symbol.as_ref(), "symbol", "NFT_SYMBOL")?;
-                    (
-                        require(token_id, "token_id", "TOKEN_ID")?,
-                        nft_price
-                            .or_else(|| std::env::var("SOL_NFT_PRICE").ok()?.parse().ok())
-                            .ok_or_else(|| {
-                                anyhow!(
-                                    "Missing required argument: --nft-price (or set SOL_NFT_PRICE env var)"
-                                )
-                            })?,
-                        require(metadata_uri, "metadata_uri", "METADATA_URI")?,
-                    )
-                }
-            };
-
-            let args = CommitForMintArgs {
-                chain: chain.clone(),
-                eth_rpc,
-                seller_eth_key,
-                nft_contract: nft_contract
-                    .map(|s| s.parse())
-                    .transpose()
-                    .context("Invalid NFT contract address")?,
-                buyer_address: buyer_address
-                    .map(|s| s.parse())
-                    .transpose()
-                    .context("Invalid buyer address")?,
-                sol_rpc,
-                sol_ws,
-                seller_sol_keypair,
-                program_id,
-                name,
-                symbol,
-                secret_hash: utils::decode_hex_hash(&secret_hash, "secret hash")?,
-                token_id,
-                nft_price,
-                metadata_uri,
+                    )?,
+                    program_id: require(program_id, "program_id", "SOL_PROGRAM_ID")?,
+                    name: require(name, "name", "NFT_NAME")?,
+                    symbol: require(symbol, "symbol", "NFT_SYMBOL")?,
+                    buyer: sol_buyer
+                        .map(|s| s.parse())
+                        .transpose()
+                        .context("Invalid Solana buyer pubkey")?,
+                    secret_hash,
+                    token_id,
+                    price: nft_price
+                        .or_else(|| std::env::var("SOL_NFT_PRICE").ok()?.parse().ok())
+                        .ok_or_else(|| {
+                            anyhow!(
+                                "Missing required argument: --nft-price (or set SOL_NFT_PRICE env var)"
+                            )
+                        })?,
+                    metadata_uri,
+                }),
             };
 
             let result = execute::commit_for_mint(args).await?;
@@ -468,43 +475,31 @@ async fn main() -> Result<()> {
                 .parse::<Chain>()
                 .context("Invalid chain specification")?;
 
-            let (secret_bytes, _, _) = utils::resolve_secrets(secret, secret_file)?;
-
-            match &chain {
-                Chain::Ethereum => {
-                    require(buyer_eth_key.as_ref(), "buyer_eth_key", "BUYER_ETH_PRIVKEY")?;
-                    require(
-                        nft_contract.as_ref(),
-                        "nft_contract",
-                        "NFT_CONTRACT_ADDRESS",
-                    )?;
-                }
-                Chain::Solana => {
-                    require(
-                        buyer_sol_keypair.as_ref(),
-                        "buyer_sol_keypair",
-                        "BUYER_SOL_KEYPAIR",
-                    )?;
-                    require(program_id.as_ref(), "program_id", "SOL_PROGRAM_ID")?;
-                }
-            };
-
+            let (secret, _, _, _) = utils::resolve_secrets(secret, secret_file)?;
             let token_id = require(token_id, "token_id", "TOKEN_ID")?;
 
-            let args = MintWithSecretArgs {
-                chain: chain.clone(),
-                eth_rpc,
-                buyer_eth_key,
-                nft_contract: nft_contract
-                    .map(|s| s.parse())
-                    .transpose()
-                    .context("Invalid NFT contract address")?,
-                sol_rpc,
-                sol_ws,
-                buyer_sol_keypair,
-                program_id,
-                secret: secret_bytes,
-                token_id,
+            let args = match chain {
+                Chain::Ethereum => MintWithSecretArgs::Ethereum(EthMintArgs {
+                    eth_rpc: require(eth_rpc, "eth_rpc", "ETH_RPC_URL")?,
+                    buyer_eth_key: require(buyer_eth_key, "buyer_eth_key", "BUYER_ETH_PRIVKEY")?,
+                    nft_contract: require(nft_contract, "nft_contract", "NFT_CONTRACT_ADDRESS")?
+                        .parse()
+                        .context("Invalid NFT contract address")?,
+                    secret,
+                    token_id,
+                }),
+                Chain::Solana => MintWithSecretArgs::Solana(SolMintArgs {
+                    sol_rpc: require(sol_rpc, "sol_rpc", "SOL_RPC_URL")?,
+                    sol_ws: require(sol_ws, "sol_ws", "SOL_WS_URL")?,
+                    buyer_sol_keypair: require(
+                        buyer_sol_keypair,
+                        "buyer_sol_keypair",
+                        "BUYER_SOL_KEYPAIR",
+                    )?,
+                    program_id: require(program_id, "program_id", "SOL_PROGRAM_ID")?,
+                    secret,
+                    token_id,
+                }),
             };
 
             let result = execute::mint_with_secret(args).await?;
@@ -529,7 +524,7 @@ async fn main() -> Result<()> {
         } => {
             let network = utils::parse_btc_network(&btc_network)?;
 
-            let (secret, file_secret_hash, file_lock_txid) =
+            let (secret, file_secret_hash, file_lock_txid, file_timeout) =
                 utils::resolve_secrets(secret, secret_file.clone())?;
 
             let secret_hash = secret_hash
@@ -548,6 +543,10 @@ async fn main() -> Result<()> {
                 .ok_or_else(|| {
                     anyhow!("Lock txid required (use --lock-txid or provide via --secret-file)")
                 })?;
+
+            let timeout = timeout.or(file_timeout).ok_or_else(|| {
+                anyhow!("Timeout height required (use --timeout or provide via --secret-file)")
+            })?;
 
             let args = ClaimBtcArgs {
                 btc_rpc,
@@ -586,44 +585,32 @@ async fn main() -> Result<()> {
                 .parse::<Chain>()
                 .context("Invalid chain specification")?;
 
-            match &chain {
-                Chain::Ethereum => {
-                    require(
-                        caller_eth_key.as_ref(),
+            let token_id = require(token_id, "token_id", "TOKEN_ID")?;
+
+            let args = match chain {
+                Chain::Ethereum => CancelCommitArgs::Ethereum(EthCancelArgs {
+                    eth_rpc: require(eth_rpc, "eth_rpc", "ETH_RPC_URL")?,
+                    caller_eth_key: require(
+                        caller_eth_key,
                         "caller_eth_key",
                         "SELLER_ETH_PRIVKEY",
-                    )?;
-                    require(
-                        nft_contract.as_ref(),
-                        "nft_contract",
-                        "NFT_CONTRACT_ADDRESS",
-                    )?;
-                }
-                Chain::Solana => {
-                    require(
-                        caller_sol_keypair.as_ref(),
+                    )?,
+                    nft_contract: require(nft_contract, "nft_contract", "NFT_CONTRACT_ADDRESS")?
+                        .parse()
+                        .context("Invalid NFT contract address")?,
+                    token_id,
+                }),
+                Chain::Solana => CancelCommitArgs::Solana(SolCancelArgs {
+                    sol_rpc: require(sol_rpc, "sol_rpc", "SOL_RPC_URL")?,
+                    sol_ws: require(sol_ws, "sol_ws", "SOL_WS_URL")?,
+                    caller_sol_keypair: require(
+                        caller_sol_keypair,
                         "caller_sol_keypair",
                         "SELLER_SOL_KEYPAIR",
-                    )?;
-                    require(program_id.as_ref(), "program_id", "SOL_PROGRAM_ID")?;
-                }
-            };
-
-            let final_token_id = require(token_id, "token_id", "TOKEN_ID")?;
-
-            let args = CancelCommitArgs {
-                chain: chain.clone(),
-                eth_rpc,
-                caller_eth_key,
-                nft_contract: nft_contract
-                    .map(|s| s.parse())
-                    .transpose()
-                    .context("Invalid NFT contract address")?,
-                sol_rpc,
-                sol_ws,
-                caller_sol_keypair,
-                program_id,
-                token_id: final_token_id,
+                    )?,
+                    program_id: require(program_id, "program_id", "SOL_PROGRAM_ID")?,
+                    token_id,
+                }),
             };
 
             let result = execute::cancel_commitment(args).await?;
@@ -640,7 +627,6 @@ async fn main() -> Result<()> {
             seller_btc_pubkey,
             secret_file,
             lock_vout,
-            timeout,
             destination,
         } => {
             let network = utils::parse_btc_network(&btc_network)?;
@@ -654,7 +640,6 @@ async fn main() -> Result<()> {
                 seller_btc_pubkey,
                 secret_file,
                 lock_vout,
-                timeout,
                 destination: destination
                     .map(|s| utils::parse_btc_address(&s, network))
                     .transpose()?,

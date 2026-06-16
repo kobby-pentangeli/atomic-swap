@@ -1,0 +1,44 @@
+# cargo-deny configuration. Run locally with `cargo deny check`.
+#
+# CI (.github/workflows/security.yml) runs `check advisories bans sources`. The `licenses` check is configured below but not yet enforced in CI: the full
+# cross-chain dependency tree pulls a wide license set that must be enumerated and validated with `cargo deny check licenses` before the gate is turned on.
+
+[advisories]
+version = 2
+yanked = "deny"
+# Every entry below is a transitive advisory with no safe upgrade available, reached only through the cross-chain dependency stacks (Anchor/Solana, alloy)
+# and never through a Bitcoin HTLC, swap-settlement, or cryptographic path. Each carries a rationale; a genuine vulnerability on a path we control would surface
+# under a different ID and is intentionally not suppressed. Fixable advisories (the bytes, time, rand, and keccak findings) are upgraded in the lockfile
+# rather than ignored, so only unmaintained-crate notices remain here.
+ignore = [
+  { id = "RUSTSEC-2025-0141", reason = "bincode 1.x is unmaintained, not vulnerable; it is the wire serializer pinned by the Anchor stack (anchor-lang/anchor-client) with no compatible successor, and never serializes a secret or key on a swap path" },
+  { id = "RUSTSEC-2024-0436", reason = "paste is archived/unmaintained; a compile-time-only proc-macro reached via alloy-primitives, with no runtime surface and no maintained drop-in replacement" },
+  { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2 is unmaintained; a compile-time-only proc-macro error helper reached via alloy-sol-macro, with no runtime surface and no safe upgrade" },
+]
+
+[bans]
+# The cross-chain dependency tree (Anchor/Solana, alloy, bitcoin) legitimately carries duplicate transitive versions (notably the windows-* and hashbrown
+# families); warn rather than fail so the signal stays visible without blocking unrelated work.
+multiple-versions = "warn"
+wildcards = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+
+[licenses]
+version = 2
+confidence-threshold = 0.9
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-3.0",
+  "Unicode-DFS-2016",
+  "MPL-2.0",
+  "Zlib",
+  "CC0-1.0",
+]

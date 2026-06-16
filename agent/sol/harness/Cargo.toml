@@ -1,0 +1,26 @@
+[package]
+name = "sol-htlc-harness"
+version = "0.3.0"
+description = "Host-side test harness for the sol-htlc Solana program"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/kobby-pentangeli/atomic-swap"
+edition = "2021"
+publish = false
+
+# Excluded from the Anchor (SBF) workspace so its host-only test dependencies
+# are never parsed by `cargo build-sbf`. Build the program with `anchor build`
+# before running these tests; they load the compiled `.so` into LiteSVM.
+
+[lib]
+name = "sol_htlc_harness"
+
+[dependencies]
+anchor-lang = "1.0.2"
+anchor-spl = { version = "1.0.2", features = ["metadata"] }
+sol-htlc = { path = "../programs/sol-htlc", features = ["no-entrypoint"] }
+litesvm = "0.12"
+solana-sdk = "3"
+sha2 = "0.10"
+
+[lints.rust]
+unexpected_cfgs = "allow"
